@@ -1,3 +1,4 @@
+from network_1d import adjust_1d_network
 import streamlit as st
 
 # 1. Page Configuration
