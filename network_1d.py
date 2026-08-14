@@ -1,67 +1,89 @@
 import numpy as np
 import pandas as pd
 
-# 1. Read input data from Excel
-file_path = "Book4.xlsx"
-df = pd.read_excel(file_path, header=None)
+def adjust_1d_network(df_input, bm_name, bm_height):
+    """
+    Performs 1D Least Squares Leveling Adjustment.
+    
+    Parameters:
+        df_input (pd.DataFrame): DataFrame containing ['From', 'To', 'dH', 'Dist']
+        bm_name (str): Name of the benchmark station (e.g., 'BMFAB')
+        bm_height (float): Orthometric height of the benchmark (e.g., 100.0)
+        
+    Returns:
+        dict: DataFrames for station results, observation residuals, and summary stats.
+    """
+    # Clean input columns
+    from_pt = df_input.iloc[:, 0].astype(str).str.strip().tolist()
+    to_pt = df_input.iloc[:, 1].astype(str).str.strip().tolist()
+    dH = df_input.iloc[:, 2].to_numpy(dtype=float)
+    dist = df_input.iloc[:, 3].to_numpy(dtype=float)
+    n_obs = len(dH)
 
-# MATLAB: from=txt(:,1); to=txt(:,2); dH=num(:,1); dist=num(:,2);
-from_pt = df.iloc[:, 0].astype(str).tolist()
-to_pt = df.iloc[:, 1].astype(str).tolist()
-dH = df.iloc[:, 2].to_numpy(dtype=float)
-dist = df.iloc[:, 3].to_numpy(dtype=float)
+    # 1. Unique Station List
+    stn = list(dict.fromkeys(from_pt + to_pt))
 
-n_obs = len(dH)
+    # 2. Design Matrix (A)
+    A = np.zeros((n_obs, len(stn)))
+    for i, station in enumerate(stn):
+        for j in range(n_obs):
+            if from_pt[j] == station:
+                A[j, i] = -1.0
+            if to_pt[j] == station:
+                A[j, i] = 1.0
 
-# Fixed Benchmark (BM) definitions
-const = ["BMFAB"]  # Name of BM station
-Ta = [100.0]  # Orthometric Height at BM
+    # 3. Apply Fixed Benchmark Constraint
+    L = dH.copy()
+    unk = stn.copy()
 
-# 2. Extract unique station list
-stn = list(dict.fromkeys(from_pt + to_pt))
-n_stn = len(stn)
-
-# 3. Build Design Matrix (A)
-A = np.zeros((n_obs, n_stn))
-for i, station in enumerate(stn):
-    for j in range(n_obs):
-        if from_pt[j] == station:
-            A[j, i] = -1.0
-        if to_pt[j] == station:
-            A[j, i] = 1.0
-
-# 4. Filter A Matrix and adjust Observation Vector (L)
-L = dH.copy()
-unk = stn.copy()
-
-for b, bm in enumerate(const):
-    if bm in unk:
-        idx = unk.index(bm)
+    if bm_name in unk:
+        idx = unk.index(bm_name)
         unk.pop(idx)
         A = np.delete(A, idx, axis=1)
 
     for j in range(n_obs):
-        if from_pt[j] == bm:
-            L[j] += Ta[b]
-        if to_pt[j] == bm:
-            L[j] -= Ta[b]
+        if from_pt[j] == bm_name:
+            L[j] += bm_height
+        if to_pt[j] == bm_name:
+            L[j] -= bm_height
 
-# 5. Generate Weight Matrix (P)
-# MATLAB: Pw(k) = 1 / (dist(k)^2)
-Pw = 1.0 / (dist**2)
-P = np.diag(Pw)
+    # 4. Weight Matrix (P)
+    Pw = 1.0 / (dist ** 2)
+    P = np.diag(Pw)
 
-# 6. Least Squares Adjustment
-# Solves (A' * P * A) * X = (A' * P * L) numerically (faster & more stable than inv())
-N = A.T @ P @ A
-U = A.T @ P @ L
-X = np.linalg.solve(N, U)
+    # 5. Least Squares Solution
+    N = A.T @ P @ A
+    U = A.T @ P @ L
+    X = np.linalg.solve(N, U)
 
-# Calculate Residuals (V = A*X - L)
-V = (A @ X) - L
+    # 6. Residuals (V) & Standard Errors
+    V = (A @ X) - L
+    dof = n_obs - len(unk)
+    v_pv = float(V.T @ P @ V)
+    sigma0_sq = v_pv / dof if dof > 0 else 1.0
+    
+    # Covariance & Standard Errors
+    Cxx = sigma0_sq * np.linalg.inv(N)
+    std_errors = np.sqrt(np.diag(Cxx))
 
-# 7. Format Output Results
-out = pd.DataFrame({"Station": unk, "Adjusted_Height": X})
+    # 7. Format Result DataFrames
+    df_stations = pd.DataFrame({
+        "Station": unk,
+        "Adjusted_Height (m)": np.round(X, 4),
+        "Std_Error (m)": np.round(std_errors, 4)
+    })
 
-print("Adjusted Station Heights:")
-print(out)
+    df_residuals = pd.DataFrame({
+        "From": from_pt,
+        "To": to_pt,
+        "Observed_dH (m)": dH,
+        "Distance (m)": dist,
+        "Residual_V (m)": np.round(V, 4)
+    })
+
+    return {
+        "stations": df_stations,
+        "residuals": df_residuals,
+        "sigma0_sq": sigma0_sq,
+        "dof": dof
+    }
