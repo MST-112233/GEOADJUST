@@ -1,138 +1,82 @@
-from network_1d import adjust_1d_network
 import streamlit as st
+import pandas as pd
+import io
+from network_1d import adjust_1d_network
 
-# 1. Page Configuration
-st.set_page_config(
-    page_title="GEOADJUST",
-    page_icon="🌐",
-    layout="wide"
-)
+st.set_page_config(page_title="GEOADJUST - 1D Network Adjustment", layout="wide")
 
-# Custom CSS for UI styling
-st.markdown("""
-    <style>
-    .main-title {
-        text-align: center;
-        font-size: 3rem;
-        font-weight: 800;
-        color: #1E88E5;
-        margin-bottom: 0px;
-    }
-    .sub-title {
-        text-align: center;
-        font-size: 1.2rem;
-        color: #555555;
-        margin-bottom: 2rem;
-    }
-    </style>
-""", unsafe_allow_html=True)
+st.title("🌐 GEOADJUST: 1D Network Adjustment")
+st.write("Upload your leveling network file, configure constraints, and download the adjusted output.")
 
-# Title Header
-st.markdown("<h1 class='main-title'>GEOADJUST</h1>", unsafe_allow_html=True)
-st.markdown("<p class='sub-title'>Geodetic Network Adjustment & Spatial Toolkit</p>", unsafe_allow_html=True)
+# --- Sidebar Inputs ---
+st.sidebar.header("1. Input Parameters")
+bm_name = st.sidebar.text_input("Benchmark Station Name", value="BMFAB")
+bm_height = st.sidebar.number_input("Benchmark Height (m)", value=100.0, format="%.3f")
 
-st.write("---")
-st.subheader("Select a Module")
+# --- File Upload ---
+uploaded_file = st.file_uploader("Upload Excel (.xlsx) or CSV file", type=["xlsx", "csv"])
 
-# ---------------------------------------------------------
-# DIALOG DEFINITIONS (Pop-up Modals for Each Module)
-# ---------------------------------------------------------
+if uploaded_file is not None:
+    try:
+        if uploaded_file.name.endswith('.csv'):
+            df_input = pd.read_csv(uploaded_file, header=None)
+        else:
+            df_input = pd.read_excel(uploaded_file, header=None)
 
-@st.dialog("📏 1D Network Adjustment (Levelling)", width="large")
-def show_1d_module():
-    st.caption("Perform 1D least-squares adjustment for differential levelling networks.")
-    st.file_uploader("Upload Levelling Observation File (.csv)", type=["csv"])
-    st.number_input("Benchmark Height (m)", value=100.0, step=0.001)
-    
-    st.info("📌 **Module Code Placeholder:** Paste your 1D Levelling algorithm logic here.")
-    
-    if st.button("Run 1D Adjustment", type="primary"):
-        st.success("Module executed successfully!")
+        st.subheader("📋 Input Data Preview")
+        st.dataframe(df_input.head())
 
-@st.dialog("📐 2D Network Adjustment (Traversing)", width="large")
-def show_2d_module():
-    st.caption("2D least-squares adjustment for angles, azimuths, and horizontal distances.")
-    st.file_uploader("Upload Control Points (.csv)", type=["csv"], key="2d_pts")
-    st.file_uploader("Upload Distance/Angle Obs (.csv)", type=["csv"], key="2d_obs")
-    
-    st.info("📌 **Module Code Placeholder:** Paste your 2D Traversing algorithm logic here.")
-    
-    if st.button("Compute 2D Adjustment", type="primary"):
-        st.success("2D Computation completed!")
+        if st.button("🚀 Run 1D Adjustment"):
+            # Compute Adjustment
+            results = adjust_1d_network(df_input, bm_name, bm_height)
 
-@st.dialog("🛰️ 3D Network Adjustment (GNSS)", width="large")
-def show_3d_module():
-    st.caption("3D adjustment incorporating baseline vectors (dX, dY, dZ) and covariance matrices.")
-    st.file_uploader("Upload RINEX / Baseline File", key="3d_gnss")
-    st.selectbox("Reference Frame / Datum", ["WGS84", "ITRF2020", "Local Localized Datum"])
-    
-    st.info("📌 **Module Code Placeholder:** Paste your 3D GNSS algorithm logic here.")
-    
-    if st.button("Execute 3D Adjustment", type="primary"):
-        st.success("3D Processing completed!")
+            st.success("Adjustment Completed Successfully!")
 
-@st.dialog("🗺️ Map Projection", width="large")
-def show_map_module():
-    st.caption("Convert between Geographic (Lat/Lon) and Projected Coordinates (UTM/Local).")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.selectbox("Transformation Type", ["Geographic to UTM", "UTM to Geographic"])
-        st.number_input("Latitude / Northing", value=1.4927)
-    with col2:
-        st.number_input("Longitude / Easting", value=103.7414)
-        st.selectbox("Ellipsoid", ["WGS84", "GRS80", "Kertau 1948"])
-        
-    st.info("📌 **Module Code Placeholder:** Paste your Map Projection math here.")
-    
-    if st.button("Convert Coordinates", type="primary"):
-        st.success("Conversion executed!")
+            # Display Stats
+            st.metric("Reference Variance (σ₀²)", f"{results['sigma0_sq']:.6f}")
+            st.metric("Degrees of Freedom", results['dof'])
 
-@st.dialog("📍 Real-Time Tracking", width="large")
-def show_tracking_module():
-    st.caption("Live streaming of spatial positions and trajectory visualization.")
-    st.text_input("NMEA / RTCM Stream URL", "tcp://127.0.0.1:9000")
-    st.map(data={"lat": [1.4927], "lon": [103.7414]}, zoom=12)
-    
-    st.info("📌 **Module Code Placeholder:** Paste your Live Tracking receiver code here.")
+            # Display Results Tables
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("📍 Adjusted Station Heights")
+                st.dataframe(results['stations'])
 
-# ---------------------------------------------------------
-# DASHBOARD GRID (5 Module Cards on 1 Page)
-# ---------------------------------------------------------
+            with col2:
+                st.subheader("📏 Observation Residuals")
+                st.dataframe(results['residuals'])
 
-# Row 1: First 3 Modules
-col1, col2, col3 = st.columns(3)
+            # --- Export Section ---
+            st.markdown("---")
+            st.subheader("💾 Download Results")
 
-with col1:
-    st.markdown("### 📏 1D Levelling")
-    st.write("1D least-squares adjustment for vertical levelling networks.")
-    if st.button("Open 1D Module", key="btn_1d", use_container_width=True):
-        show_1d_module()
+            export_format = st.radio("Select Export Format:", ["Excel (.xlsx)", "CSV (.csv)"])
 
-with col2:
-    st.markdown("### 📐 2D Traversing")
-    st.write("2D adjustment for distance, horizontal angle, and azimuth observations.")
-    if st.button("Open 2D Module", key="btn_2d", use_container_width=True):
-        show_2d_module()
+            if export_format == "Excel (.xlsx)":
+                # Create an Excel buffer with multiple sheets
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    results['stations'].to_excel(writer, sheet_name='Adjusted Heights', index=False)
+                    results['residuals'].to_excel(writer, sheet_name='Residuals', index=False)
+                
+                st.download_button(
+                    label="📥 Download Excel Report",
+                    data=buffer.getvalue(),
+                    file_name="1D_Adjustment_Results.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
-with col3:
-    st.markdown("### 🛰️ 3D GNSS")
-    st.write("3D network adjustment using spatial baseline vectors and covariance.")
-    if st.button("Open 3D Module", key="btn_3d", use_container_width=True):
-        show_3d_module()
+            else:
+                # Combine data into single CSV download
+                combined_df = pd.concat([results['stations'], results['residuals']], axis=1)
+                csv_data = combined_df.to_csv(index=False).encode('utf-8')
 
-st.write("") # Spacing
+                st.download_button(
+                    label="📥 Download CSV Report",
+                    data=csv_data,
+                    file_name="1D_Adjustment_Results.csv",
+                    mime="text/csv"
+                )
 
-# Row 2: Remaining 2 Modules
-col4, col5, _ = st.columns([1, 1, 1])
-
-with col4:
-    st.markdown("### 🗺️ Map Projection")
-    st.write("Coordinate conversion between Ellipsoidal and Grid projections.")
-    if st.button("Open Projection Module", key="btn_proj", use_container_width=True):
-        show_map_module()
-
-with col5:
-    st.markdown("### 📍 Real-Time Tracking")
-    st.write("Stream spatial positions live and plot trajectory data.")
-    if st.button("Open Tracking Module", key="btn_track", use_container_width=True):
-        show_tracking_module()
+    except Exception as e:
+        st.error(f"Error processing file: {e}")
