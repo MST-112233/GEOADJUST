@@ -1,4 +1,3 @@
-import os
 import io
 import streamlit as st
 import pandas as pd
@@ -48,7 +47,7 @@ def show_1d_module():
     # --- Benchmark Inputs ---
     col_bm1, col_bm2 = st.columns(2)
     with col_bm1:
-        bm_name = st.text_input("Benchmark Station Name (Fixed)", value="BMFAB")
+        bm_name = st.text_input("Benchmark Station Name (Fixed Datum)", value="BMFGHT")
     with col_bm2:
         bm_height = st.number_input("Benchmark Height (m)", value=100.0, step=0.001, format="%.4f")
     
@@ -62,8 +61,8 @@ def show_1d_module():
         | Col 1 | `From_Point` | String | Origin Station ID | **Yes** |
         | Col 2 | `To_Point` | String | Target Station ID | **Yes** |
         | Col 3 | `dH_m` | Float | Observed height difference ($m$) | **Yes** |
-        | Col 4 | `Dist_km` | Float | Line length ($km$) | Optional (default = 1.0) |
-        | Col 5 | `StdDev_mm` | Float | A-priori std dev ($mm$) | Optional (default = 1.0) |
+        | Col 4 | `Dist_km` | Float | Line length ($km$) | Optional |
+        | Col 5 | `StdDev_mm` | Float | A-priori std dev ($mm$) | Optional |
         """)
 
     # --- File Upload ---
@@ -71,7 +70,7 @@ def show_1d_module():
     
     if uploaded_file is not None:
         try:
-            has_header = st.checkbox("File contains a header row", value=True)
+            has_header = st.checkbox("File contains a header row", value=False)
             
             # Read file based on extension
             if uploaded_file.name.endswith('.csv'):
@@ -84,6 +83,9 @@ def show_1d_module():
             if not has_header or len(df_input.columns) < 3:
                 rename_map = {i: expected_cols[i] for i in range(min(len(df_input.columns), 5))}
                 df_input = df_input.rename(columns=rename_map)
+            else:
+                # Force clean column names if headers exist
+                df_input.columns = [str(col).strip() for col in df_input.columns]
 
             st.write("📋 **Input Data Preview:**")
             st.dataframe(df_input.head(5), use_container_width=True)
@@ -93,24 +95,16 @@ def show_1d_module():
             else:
                 st.success("✅ File format verified!")
 
-                # --- Output Directory Selector ---
-                st.markdown("---")
-                st.subheader("💾 Output Destination")
-                default_dir = os.path.join(os.path.expanduser("~"), "GEOADJUST_Outputs")
-                output_dir = st.text_input("Local Save Directory Path:", value=default_dir)
-
                 # --- Execution ---
                 if st.button("Run 1D Adjustment", type="primary", use_container_width=True):
                     with st.spinner("Computing Least Squares Adjustment..."):
                         results = adjust_1d_network(df_input, bm_name, bm_height)
                         st.session_state['1d_results'] = results
-                        st.session_state['output_dir'] = output_dir
                         st.success("Adjustment Completed Successfully!")
 
-                # --- Display Results & Downloads ---
+                # --- Display Results & Output Export ---
                 if '1d_results' in st.session_state:
                     res = st.session_state['1d_results']
-                    target_dir = st.session_state.get('output_dir', default_dir)
 
                     st.markdown("---")
                     st.subheader("📊 Adjustment Metrics")
@@ -128,43 +122,34 @@ def show_1d_module():
 
                     # Export Logic
                     st.markdown("---")
-                    st.subheader("📥 Export Results")
+                    st.subheader("💾 Output Destination & Download Options")
+                    
+                    custom_filename = st.text_input("Custom Output File Name (without extension):", value="1D_Adjustment_Results")
+                    export_format = st.radio("Select File Download Format:", ["Excel (.xlsx)", "CSV (.csv)"], horizontal=True)
 
-                    # Option 1: Direct Save to Local Path
-                    if st.button("📁 Save Files Directly to Local Directory"):
-                        os.makedirs(target_dir, exist_ok=True)
-                        excel_path = os.path.join(target_dir, "1D_Adjustment_Results.xlsx")
-                        csv_path = os.path.join(target_dir, "1D_Adjustment_Results.csv")
-
-                        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-                            res['stations'].to_excel(writer, sheet_name='Adjusted Heights', index=False)
-                            res['residuals'].to_excel(writer, sheet_name='Residuals', index=False)
-
-                        combined_df = pd.concat([res['stations'], res['residuals']], axis=1)
-                        combined_df.to_csv(csv_path, index=False)
-                        st.success(f"Files saved to `{target_dir}`")
-
-                    # Option 2: Web Browser Download
-                    export_format = st.radio("Download via Browser:", ["Excel (.xlsx)", "CSV (.csv)"], horizontal=True)
                     if export_format == "Excel (.xlsx)":
                         buffer = io.BytesIO()
                         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                             res['stations'].to_excel(writer, sheet_name='Adjusted Heights', index=False)
                             res['residuals'].to_excel(writer, sheet_name='Residuals', index=False)
+                        
                         st.download_button(
-                            label="📥 Download Excel File",
+                            label="📥 Save & Download Excel Output",
                             data=buffer.getvalue(),
-                            file_name="1D_Adjustment_Results.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            file_name=f"{custom_filename}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True
                         )
                     else:
                         combined_df = pd.concat([res['stations'], res['residuals']], axis=1)
                         csv_bytes = combined_df.to_csv(index=False).encode('utf-8')
+                        
                         st.download_button(
-                            label="📥 Download CSV File",
+                            label="📥 Save & Download CSV Output",
                             data=csv_bytes,
-                            file_name="1D_Adjustment_Results.csv",
-                            mime="text/csv"
+                            file_name=f"{custom_filename}.csv",
+                            mime="text/csv",
+                            use_container_width=True
                         )
 
         except Exception as e:
@@ -220,7 +205,6 @@ def show_tracking_module():
 # DASHBOARD GRID (5 Module Cards on 1 Page)
 # ---------------------------------------------------------
 
-# Row 1: First 3 Modules
 col1, col2, col3 = st.columns(3)
 
 with col1:
@@ -243,7 +227,6 @@ with col3:
 
 st.write("") # Spacing
 
-# Row 2: Remaining 2 Modules
 col4, col5, _ = st.columns([1, 1, 1])
 
 with col4:
