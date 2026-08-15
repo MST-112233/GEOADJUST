@@ -77,12 +77,13 @@ def show_1d_module():
             st.write("📋 **Input Data Preview:**")
             st.dataframe(df_input.head(5), use_container_width=True)
 
+            # Trigger Calculation and store explicitly in session_state
             if st.button("🚀 Run MATLAB-Aligned 1D Adjustment", type="primary", use_container_width=True):
                 with st.spinner("Computing Adjustment Matrix..."):
-                    results = adjust_1d_network(df_input, bm_name, bm_height)
-                    st.session_state['1d_results'] = results
+                    st.session_state['1d_results'] = adjust_1d_network(df_input, bm_name, bm_height)
                     st.success("Adjustment Executed Successfully!")
 
+            # Render Results & Station Outputs
             if '1d_results' in st.session_state:
                 res = st.session_state['1d_results']
 
@@ -95,39 +96,54 @@ def show_1d_module():
                 m3.metric("Degrees of Freedom", res['dof'])
                 m4.metric("Sum VᵀPV", f"{res['vTpv']:.5f}")
 
-                res_col1, res_col2 = st.columns(2)
-                with res_col1:
-                    st.write("📍 **Adjusted Heights**")
-                    st.dataframe(res['stations'], use_container_width=True)
-                with res_col2:
-                    st.write("📏 **Observation Residuals**")
-                    st.dataframe(res['residuals'], use_container_width=True)
-
+                # Display Per-Station Results Table Clearly
                 st.markdown("---")
-                st.subheader("💾 Export & Download Options")
-                
-                custom_filename = st.text_input("Filename:", value="1D_Adjustment_MATLAB_Results")
-                export_format = st.radio("Format:", ["Excel (.xlsx)", "CSV (.csv)"], horizontal=True)
+                st.subheader("📍 Adjusted Heights & Station Coordinates")
+                st.dataframe(
+                    res['stations'], 
+                    use_container_width=True, 
+                    hide_index=True,
+                    column_config={
+                        "Station": st.column_config.TextColumn("Station ID"),
+                        "Adjusted Height (m)": st.column_config.NumberColumn("Adjusted Height (m)", format="%.4f"),
+                        "Std Dev (mm)": st.column_config.NumberColumn("Std Error (mm)", format="%.2f"),
+                        "Status": st.column_config.TextColumn("Datum Status")
+                    }
+                )
 
-                if export_format == "Excel (.xlsx)":
-                    buffer = io.BytesIO()
-                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                        res['stations'].to_excel(writer, sheet_name='Adjusted Heights', index=False)
-                        res['residuals'].to_excel(writer, sheet_name='Residuals', index=False)
-                    
+                st.subheader("📏 Line Residuals & Weights")
+                st.dataframe(res['residuals'], use_container_width=True, hide_index=True)
+
+                # Export & Download Section
+                st.markdown("---")
+                st.subheader("💾 Export Station Results")
+                
+                custom_filename = st.text_input("Output Filename:", value="1D_Station_Heights_Results")
+                
+                col_dl1, col_dl2 = st.columns(2)
+
+                # Excel Download Buffer
+                excel_buffer = io.BytesIO()
+                with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                    res['stations'].to_excel(writer, sheet_name='Station Heights', index=False)
+                    res['residuals'].to_excel(writer, sheet_name='Line Residuals', index=False)
+                
+                with col_dl1:
                     st.download_button(
-                        label="📥 Save & Download Excel",
-                        data=buffer.getvalue(),
+                        label="📥 Download Excel Report (.xlsx)",
+                        data=excel_buffer.getvalue(),
                         file_name=f"{custom_filename}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True
                     )
-                else:
-                    combined_df = pd.concat([res['stations'], res['residuals']], axis=1)
+
+                # CSV Download Buffer
+                csv_bytes = res['stations'].to_csv(index=False).encode('utf-8')
+                with col_dl2:
                     st.download_button(
-                        label="📥 Save & Download CSV",
-                        data=combined_df.to_csv(index=False).encode('utf-8'),
-                        file_name=f"{custom_filename}.csv",
+                        label="📥 Download Stations CSV (.csv)",
+                        data=csv_bytes,
+                        file_name=f"{custom_filename}_stations.csv",
                         mime="text/csv",
                         use_container_width=True
                     )
@@ -170,7 +186,7 @@ def show_tracking_module():
     st.text_input("NMEA / RTCM Stream URL", "tcp://127.0.0.1:9000")
     st.map(data={"lat": [1.4927], "lon": [103.7414]}, zoom=12)
 
-# Module Selection Dashboard
+# Module Selection Dashboard Grid
 col1, col2, col3 = st.columns(3)
 
 with col1:
