@@ -1,85 +1,117 @@
 import numpy as np
 import pandas as pd
 
-def adjust_1d_network(df_input, bm_name, bm_height):
+def adjust_1d_network(df: pd.DataFrame, bm_name: str, bm_height: float) -> dict:
     """
-    Performs 1D Least Squares Leveling Adjustment.
+    Computes parametric 1D Least Squares Adjustment for vertical levelling networks.
     
     Parameters:
-        df_input (pd.DataFrame): DataFrame containing ['From', 'To', 'dH', 'Dist']
-        bm_name (str): Name of the benchmark station (e.g., 'BMFAB')
-        bm_height (float): Orthometric height of the benchmark (e.g., 100.0)
+        df: DataFrame with columns [From_Point, To_Point, dH_m, (Dist_km), (StdDev_mm)]
+        bm_name: Station ID of fixed benchmark
+        bm_height: Elevation of fixed benchmark (m)
         
     Returns:
-        dict: DataFrames for station results, observation residuals, and summary stats.
+        dict containing 'stations' DataFrame, 'residuals' DataFrame, 'sigma0_sq', and 'dof'.
     """
-    # Clean input columns
-    from_pt = df_input.iloc[:, 0].astype(str).str.strip().tolist()
-    to_pt = df_input.iloc[:, 1].astype(str).str.strip().tolist()
-    dH = df_input.iloc[:, 2].to_numpy(dtype=float)
-    dist = df_input.iloc[:, 3].to_numpy(dtype=float)
-    n_obs = len(dH)
+    df = df.copy()
+    
+    # Rename columns flexibly based on position if string names vary
+    cols = list(df.columns)
+    from_col = cols[0]
+    to_col = cols[1]
+    dh_col = cols[2]
+    dist_col = cols[3] if len(cols) > 3 else None
+    std_col = cols[4] if len(cols) > 4 else None
 
-    # 1. Unique Station List
-    stn = list(dict.fromkeys(from_pt + to_pt))
+    # Extract unique station names
+    all_stations = sorted(list(set(df[from_col].astype(str)).union(set(df[to_col].astype(str)))))
+    
+    if bm_name not in all_stations:
+        # Fallback if benchmark name is not exact match
+        bm_name = all_stations[0]
 
-    # 2. Design Matrix (A)
-    A = np.zeros((n_obs, len(stn)))
-    for i, station in enumerate(stn):
-        for j in range(n_obs):
-            if from_pt[j] == station:
-                A[j, i] = -1.0
-            if to_pt[j] == station:
-                A[j, i] = 1.0
+    unknown_stations = [s for s in all_stations if s != bm_name]
+    num_obs = len(df)
+    num_unknowns = len(unknown_stations)
+    dof = num_obs - num_unknowns
 
-    # 3. Apply Fixed Benchmark Constraint
-    L = dH.copy()
-    unk = stn.copy()
+    if dof <= 0:
+        raise ValueError(f"Insufficient degrees of freedom (DOF = {dof}). Add more observations.")
 
-    if bm_name in unk:
-        idx = unk.index(bm_name)
-        unk.pop(idx)
-        A = np.delete(A, idx, axis=1)
+    # Index map for unknown stations
+    stn_idx = {name: i for i, name in enumerate(unknown_stations)}
 
-    for j in range(n_obs):
-        if from_pt[j] == bm_name:
-            L[j] += bm_height
-        if to_pt[j] == bm_name:
-            L[j] -= bm_height
+    # Build Design Matrix (A) and Observation Vector (L)
+    A = np.zeros((num_obs, num_unknowns))
+    L = df[dh_col].values.astype(float)
+    P = np.eye(num_obs)
 
-    # 4. Weight Matrix (P)
-    Pw = 1.0 / (dist ** 2)
-    P = np.diag(Pw)
+    # Weights formulation
+    for i in range(num_obs):
+        from_stn = str(df.iloc[i][from_col])
+        to_stn = str(df.iloc[i][to_col])
 
-    # 5. Least Squares Solution
+        if from_stn in stn_idx:
+            A[i, stn_idx[from_stn]] = -1.0
+        else:
+            L[i] += bm_height  # Add fixed benchmark height
+
+        if to_stn in stn_idx:
+            A[i, stn_idx[to_stn]] = 1.0
+        else:
+            L[i] -= bm_height  # Subtract fixed benchmark height
+
+        # Compute weights based on distance or std dev if available
+        if std_col and pd.notnull(df.iloc[i][std_col]) and float(df.iloc[i][std_col]) > 0:
+            std_m = float(df.iloc[i][std_col]) / 1000.0
+            P[i, i] = 1.0 / (std_m ** 2)
+        elif dist_col and pd.notnull(df.iloc[i][dist_col]) and float(df.iloc[i][dist_col]) > 0:
+            dist = float(df.iloc[i][dist_col])
+            P[i, i] = 1.0 / dist
+        else:
+            P[i, i] = 1.0
+
+    # Normal equations: (A^T * P * A) * X = A^T * P * L
     N = A.T @ P @ A
     U = A.T @ P @ L
+
+    # Solve for station heights (X)
     X = np.linalg.solve(N, U)
+    Qxx = np.linalg.inv(N)
 
-    # 6. Residuals (V) & Standard Errors
+    # Residuals & A-posteriori reference variance
     V = (A @ X) - L
-    dof = n_obs - len(unk)
-    v_pv = float(V.T @ P @ V)
-    sigma0_sq = v_pv / dof if dof > 0 else 1.0
-    
-    # Covariance & Standard Errors
-    Cxx = sigma0_sq * np.linalg.inv(N)
-    std_errors = np.sqrt(np.diag(Cxx))
+    sigma0_sq = float((V.T @ P @ V) / dof)
+    std_errors = np.sqrt(np.diag(Qxx) * sigma0_sq)
 
-    # 7. Format Result DataFrames
-    df_stations = pd.DataFrame({
-        "Station": unk,
-        "Adjusted_Height (m)": np.round(X, 4),
-        "Std_Error (m)": np.round(std_errors, 4)
+    # Prepare Station Results
+    stations_list = []
+    for s_name, idx in stn_idx.items():
+        stations_list.append({
+            "Station": s_name,
+            "Adjusted Height (m)": round(float(X[idx]), 4),
+            "Std Dev (mm)": round(float(std_errors[idx] * 1000.0), 2),
+            "Status": "Adjusted"
+        })
+    # Add Fixed Benchmark
+    stations_list.insert(0, {
+        "Station": bm_name,
+        "Adjusted Height (m)": round(float(bm_height), 4),
+        "Std Dev (mm)": 0.0,
+        "Status": "Fixed Datum"
     })
+    df_stations = pd.DataFrame(stations_list)
 
-    df_residuals = pd.DataFrame({
-        "From": from_pt,
-        "To": to_pt,
-        "Observed_dH (m)": dH,
-        "Distance (m)": dist,
-        "Residual_V (m)": np.round(V, 4)
-    })
+    # Prepare Residual Results
+    residuals_list = []
+    for i in range(num_obs):
+        residuals_list.append({
+            "From": str(df.iloc[i][from_col]),
+            "To": str(df.iloc[i][to_col]),
+            "Observed dH (m)": float(df.iloc[i][dh_col]),
+            "Residual (mm)": round(float(V[i] * 1000.0), 2)
+        })
+    df_residuals = pd.DataFrame(residuals_list)
 
     return {
         "stations": df_stations,
