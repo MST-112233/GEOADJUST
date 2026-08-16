@@ -1,0 +1,15 @@
+# render.yaml
+services:
+  - type: web
+    name: geoadjust-tracking
+    runtime: python
+    repo: https://github.com/YOUR_USERNAME/geoadjust  # Replace with your repo
+    plan: free
+    region: singapore  # Choose closest to your users
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -k geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 updated_app:app
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: SECRET_KEY
+        generateValue: true
