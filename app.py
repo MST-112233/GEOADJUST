@@ -197,50 +197,73 @@ with tab4:
 # =========================================================
 # TAB 5: REAL-TIME TRACKING (PLACEHOLDER)
 # =========================================================
-# In the Real-Time Tracking tab of app.py, replace the placeholder with:
-
+# In your app.py, update the tracking tab (tab5)
 with tab5:
     st.header("📍 Real-Time Tracking & Visualization")
     st.caption("Stream spatial positions live and plot trajectory data.")
     
-    # Add tracking server link
+    # Tracking server URL (Update this with your Render URL after deployment)
+    TRACKING_URL = "https://geoadjust-tracking.onrender.com"  # Will be your Render URL
+    
     st.markdown("""
     ### 🔗 Access Real-Time Tracking Interface
     
     Click the button below to open the real-time tracking interface in a new tab:
     """)
     
-    if st.button("🚀 Open Tracking Interface", use_container_width=True):
-        import webbrowser
-        webbrowser.open_new_tab("http://localhost:5000/tracking")
+    # Open tracking interface in new tab
+    st.markdown(f'<a href="{TRACKING_URL}/tracking" target="_blank" style="text-decoration: none;">', unsafe_allow_html=True)
+    st.button("🚀 Open Tracking Interface", use_container_width=True, type="primary")
+    st.markdown('</a>', unsafe_allow_html=True)
     
     st.divider()
     
+    # Server Status Check
+    st.markdown("### 📡 Server Status")
+    try:
+        import requests
+        response = requests.get(f"{TRACKING_URL}/api/health", timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            st.success(f"✅ Tracking server is online! ({data['rooms_count']} active room(s))")
+        else:
+            st.warning("⚠️ Server is reachable but returned unexpected response")
+    except Exception as e:
+        st.error(f"❌ Cannot connect to tracking server. Please ensure it's running.")
+        st.info(f"Server URL: {TRACKING_URL}")
+    
+    st.divider()
+    
+    # Instructions
     st.markdown("""
-    ### 📡 About the Tracking System
+    ### 📋 How to Use the Tracking System
     
-    - **Control Center**: Monitor field workers' locations in real-time
-    - **Site Surveyor**: Share your GPS location automatically
-    - **Live Chat**: Communicate between office and field teams
-    - **Export Data**: Download location logs and chat history
+    #### 🏢 Control Center (Office):
+    1. Click "Open Tracking Interface"
+    2. Enter a Room Name (e.g., "Project Alpha")
+    3. Set a password (remember it!)
+    4. Select "Control Center" as role
+    5. Click "Enter Room"
+    6. Share Room ID and Password with field teams
     
-    #### How to Use:
-    1. Open the tracking interface (click button above)
-    2. Create a room with a password
-    3. Share the Room ID and Password with your team
-    4. Control Center users monitor, Site Surveyors share location
+    #### 🔧 Site Surveyors (Field):
+    1. Open the tracking interface
+    2. Enter the Room ID provided by Control Center
+    3. Enter the room password
+    4. Select "Site Surveyor" as role
+    5. Click "Enter Room"
+    6. Grant location permissions when prompted
+    7. Your location will automatically update every 10 seconds
+    
+    #### ✨ Features:
+    - 📍 Real-time GPS tracking on interactive map
+    - 💬 Live chat between office and field teams
+    - 📊 Export location logs (CSV)
+    - 📝 Export chat history (TXT)
+    - 👥 Multiple users supported
+    - 🌐 Works across WiFi and mobile data
+    - 🔒 Room-based security with passwords
     """)
-    
-    # You can also embed the tracking interface using an iframe
-    st.markdown("""
-    ### 📍 Live Tracking Preview
-    """)
-    
-    # Optional: Embed the tracking interface
-    iframe_html = """
-    <iframe src="http://localhost:5000/tracking" width="100%" height="500" frameborder="0" style="border-radius: 8px;"></iframe>
-    """
-    st.components.v1.html(iframe_html, height=520)
 
 
 
