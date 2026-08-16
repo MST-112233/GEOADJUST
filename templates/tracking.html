@@ -1,3 +1,4 @@
+<!-- templates/tracking.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -11,78 +12,246 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
         * { box-sizing: border-box; font-family: Arial, sans-serif; margin: 0; padding: 0; }
-        body { display: flex; height: 100vh; flex-direction: column; }
-        #auth-screen { padding: 30px; max-width: 400px; margin: auto; border: 1px solid #ccc; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        #main-app { display: none; flex: 1; flex-direction: row; height: 100vh; }
-        #map { flex: 2; height: 100%; }
-        #sidebar { flex: 1; display: flex; flex-direction: column; border-left: 2px solid #ddd; background: #f9f9f9; padding: 15px; }
-        #chat-box { flex: 1; overflow-y: auto; border: 1px solid #ccc; background: #fff; padding: 10px; margin-bottom: 10px; border-radius: 4px; }
-        .msg { margin-bottom: 8px; font-size: 14px; }
-        .msg strong { color: #333; }
-        .msg span { font-size: 11px; color: #888; margin-left: 5px; }
-        .form-group { margin-bottom: 12px; }
-        label { display: block; font-weight: bold; margin-bottom: 4px; }
-        input, select, button { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
-        button { background: #007bff; color: white; font-weight: bold; border: none; cursor: pointer; margin-top: 5px; }
-        button:hover { background: #0056b3; }
-        .btn-download { background: #28a745; margin-top: 5px; }
-        .btn-download:hover { background: #218838; }
-        #download-section { margin-top: 15px; padding-top: 15px; border-top: 1px solid #ccc; }
+        body { display: flex; height: 100vh; flex-direction: column; background: #f0f2f5; }
+        
+        #auth-screen { 
+            padding: 30px; 
+            max-width: 450px; 
+            margin: auto; 
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+        #auth-screen h2 { 
+            color: #1E88E5; 
+            margin-bottom: 5px;
+            font-size: 24px;
+        }
+        #auth-screen .subtitle {
+            color: #666;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        
+        #main-app { 
+            display: none; 
+            flex: 1; 
+            flex-direction: row; 
+            height: 100vh; 
+        }
+        #map { 
+            flex: 2; 
+            height: 100%; 
+        }
+        #sidebar { 
+            flex: 1; 
+            max-width: 400px;
+            display: flex; 
+            flex-direction: column; 
+            border-left: 2px solid #ddd; 
+            background: #f9f9f9; 
+            padding: 15px; 
+        }
+        
+        .form-group { 
+            margin-bottom: 12px; 
+        }
+        label { 
+            display: block; 
+            font-weight: bold; 
+            margin-bottom: 4px; 
+            font-size: 13px;
+            color: #333;
+        }
+        input, select, button { 
+            width: 100%; 
+            padding: 10px; 
+            border: 1px solid #ddd; 
+            border-radius: 6px; 
+            font-size: 14px;
+        }
+        button { 
+            background: #1E88E5; 
+            color: white; 
+            font-weight: bold; 
+            border: none; 
+            cursor: pointer; 
+            margin-top: 5px;
+            transition: background 0.3s;
+        }
+        button:hover { 
+            background: #1565C0; 
+        }
+        .btn-download { 
+            background: #28a745; 
+            margin-top: 5px; 
+        }
+        .btn-download:hover { 
+            background: #218838; 
+        }
+        .btn-danger {
+            background: #dc3545;
+        }
+        .btn-danger:hover {
+            background: #c82333;
+        }
+        
+        #chat-box { 
+            flex: 1; 
+            overflow-y: auto; 
+            border: 1px solid #ddd; 
+            background: #fff; 
+            padding: 10px; 
+            margin-bottom: 10px; 
+            border-radius: 6px; 
+            min-height: 200px;
+        }
+        .msg { 
+            margin-bottom: 8px; 
+            font-size: 14px; 
+            padding: 6px 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+        .msg strong { 
+            color: #1E88E5; 
+        }
+        .msg .system {
+            color: #666;
+            font-style: italic;
+        }
+        .msg span { 
+            font-size: 11px; 
+            color: #888; 
+            margin-left: 5px; 
+        }
+        
+        #room-header {
+            color: #1E88E5;
+            font-size: 18px;
+        }
+        #role-header {
+            font-size: 13px; 
+            color: #555; 
+            margin-bottom: 10px;
+        }
+        
+        #download-section { 
+            margin-top: 15px; 
+            padding-top: 15px; 
+            border-top: 1px solid #ccc; 
+        }
+        #download-section h4 {
+            font-size: 14px;
+            color: #333;
+            margin-bottom: 8px;
+        }
+        
+        .input-group {
+            display: flex;
+            gap: 8px;
+        }
+        .input-group input {
+            flex: 1;
+        }
+        .input-group button {
+            width: auto;
+            padding: 10px 20px;
+            white-space: nowrap;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-online {
+            background: #28a745;
+        }
+        .status-offline {
+            background: #dc3545;
+        }
+        
+        @media (max-width: 768px) {
+            #main-app {
+                flex-direction: column;
+            }
+            #sidebar {
+                max-width: 100%;
+                height: 40vh;
+            }
+            #map {
+                height: 60vh;
+            }
+        }
     </style>
 </head>
 <body>
 
     <!-- Room Entry Form -->
     <div id="auth-screen">
-        <h2>GEOADJUST Real-Time Room</h2>
+        <h2>📍 GEOADJUST Tracking</h2>
+        <p class="subtitle">Real-Time Location Sharing & Communication</p>
+        
         <div class="form-group">
-            <label>Username</label>
-            <input type="text" id="username" placeholder="Enter your name" required>
+            <label>👤 Username</label>
+            <input type="text" id="username" placeholder="Enter your name" value="User_1" required>
         </div>
         <div class="form-group">
-            <label>Room ID</label>
-            <input type="text" id="room-id" placeholder="Enter Room ID" required>
+            <label>🏠 Room ID</label>
+            <input type="text" id="room-id" placeholder="Enter Room ID (e.g., ProjectAlpha)" value="DemoRoom" required>
         </div>
         <div class="form-group">
-            <label>Password</label>
-            <input type="password" id="password" placeholder="Enter Room Password" required>
+            <label>🔑 Password</label>
+            <input type="password" id="password" placeholder="Enter Room Password" value="demo123" required>
         </div>
         <div class="form-group">
-            <label>Role</label>
+            <label>🎯 Role</label>
             <select id="role">
-                <option value="Control Center">Control Center (Office)</option>
-                <option value="Site Surveyor">Site Surveyor (Field Worker)</option>
+                <option value="Control Center">🏢 Control Center (Office)</option>
+                <option value="Site Surveyor">🔧 Site Surveyor (Field Worker)</option>
             </select>
         </div>
-        <button onclick="joinRoom()">Enter Room</button>
+        <button onclick="joinRoom()">🚀 Enter Room</button>
+        
+        <div style="margin-top: 15px; padding: 10px; background: #f8f9fa; border-radius: 6px; font-size: 12px; color: #666;">
+            💡 Tip: Share Room ID and Password with your team members
+        </div>
     </div>
 
     <!-- Main Live Interface -->
     <div id="main-app">
         <div id="map"></div>
         <div id="sidebar">
-            <h3 id="room-header">Room: </h3>
-            <p id="role-header" style="font-size: 13px; color: #555; margin-bottom: 10px;"></p>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <div>
+                    <h3 id="room-header">Room: </h3>
+                    <p id="role-header"></p>
+                </div>
+                <button onclick="leaveRoom()" class="btn-danger" style="width: auto; padding: 6px 12px; font-size: 12px;">Leave</button>
+            </div>
 
             <div id="chat-box"></div>
 
-            <div class="form-group" style="display:flex; gap:5px;">
-                <input type="text" id="chat-input" placeholder="Type a message...">
+            <div class="input-group">
+                <input type="text" id="chat-input" placeholder="Type a message..." onkeypress="if(event.key==='Enter') sendMessage()">
                 <button onclick="sendMessage()" style="width: auto;">Send</button>
             </div>
 
             <!-- Control Center Export Tools -->
             <div id="download-section" style="display: none;">
-                <h4>Control Center Export Options</h4>
+                <h4>📊 Control Center Export Options</h4>
                 <form id="dl-loc-form" action="/download/locations/" method="POST" style="margin-bottom: 5px;">
                     <input type="hidden" name="password" class="pass-field">
                     <input type="hidden" name="role" class="role-field">
-                    <button type="submit" class="btn-download">Download Location Logs (CSV)</button>
+                    <button type="submit" class="btn-download">📥 Download Location Logs (CSV)</button>
                 </form>
                 <form id="dl-chat-form" action="/download/chat/" method="POST">
                     <input type="hidden" name="password" class="pass-field">
                     <input type="hidden" name="role" class="role-field">
-                    <button type="submit" class="btn-download">Download Chat Logs (TXT)</button>
+                    <button type="submit" class="btn-download">📥 Download Chat Logs (TXT)</button>
                 </form>
             </div>
         </div>
@@ -95,15 +264,20 @@
         let locationTimer = null;
 
         function joinRoom() {
-            currentUsername = document.getElementById('username').value.trim();
+            currentUsername = document.getElementById('username').value.trim() || 'Anonymous';
             currentRoom = document.getElementById('room-id').value.trim();
             currentPassword = document.getElementById('password').value.trim();
             currentRole = document.getElementById('role').value;
 
-            if(!currentUsername || !currentRoom || !currentPassword) {
-                alert("Please complete all entry fields.");
+            if(!currentRoom || !currentPassword) {
+                alert("Please enter Room ID and Password.");
                 return;
             }
+
+            // Show connecting status
+            const btn = event.target;
+            btn.textContent = 'Connecting...';
+            btn.disabled = true;
 
             socket.emit('join_room_event', {
                 username: currentUsername,
@@ -114,7 +288,12 @@
         }
 
         socket.on('error_response', function(data) {
-            alert(data.message);
+            alert('❌ ' + data.message);
+            const btn = document.querySelector('button[onclick="joinRoom()"]');
+            if (btn) {
+                btn.textContent = '🚀 Enter Room';
+                btn.disabled = false;
+            }
         });
 
         socket.on('join_success', function(data) {
@@ -122,10 +301,10 @@
             document.getElementById('main-app').style.display = 'flex';
 
             document.getElementById('room-header').innerText = `Room: ${data.room_id}`;
-            document.getElementById('role-header').innerText = `Role: ${data.role} | User: ${currentUsername}`;
+            document.getElementById('role-header').innerHTML = `🎯 Role: <strong>${data.role}</strong> | 👤 User: ${currentUsername}`;
 
             // Initialize Map
-            map = L.map('map').setView([3.1390, 101.6869], 12); // Default center
+            map = L.map('map').setView([3.1390, 101.6869], 12);
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 maxZoom: 19,
                 attribution: '© OpenStreetMap'
@@ -149,22 +328,43 @@
 
             // Start 10-second Location Update Loop for Site Surveyors
             if (currentRole === 'Site Surveyor') {
-                sendLocation();
-                locationTimer = setInterval(sendLocation, 10000); // 10-second updates
+                if ("geolocation" in navigator) {
+                    sendLocation();
+                    locationTimer = setInterval(sendLocation, 10000);
+                } else {
+                    alert('⚠️ Your browser does not support GPS. Please use a device with GPS capabilities.');
+                }
+            }
+            
+            // Reset button
+            const btn = document.querySelector('button[onclick="joinRoom()"]');
+            if (btn) {
+                btn.textContent = '🚀 Enter Room';
+                btn.disabled = false;
             }
         });
 
         function sendLocation() {
             if ("geolocation" in navigator) {
-                navigator.geolocation.getCurrentPosition(position => {
-                    socket.emit('update_location', {
-                        room_id: currentRoom,
-                        lat: position.coords.latitude,
-                        lng: position.coords.longitude
-                    });
-                }, err => {
-                    console.error("GPS Error:", err);
-                }, { enableHighAccuracy: true });
+                navigator.geolocation.getCurrentPosition(
+                    position => {
+                        socket.emit('update_location', {
+                            room_id: currentRoom,
+                            lat: position.coords.latitude,
+                            lng: position.coords.longitude
+                        });
+                    }, 
+                    err => {
+                        console.error("GPS Error:", err);
+                        // Try again in 30 seconds if error
+                        setTimeout(sendLocation, 30000);
+                    }, 
+                    { 
+                        enableHighAccuracy: true,
+                        timeout: 10000,
+                        maximumAge: 60000
+                    }
+                );
             }
         }
 
@@ -177,11 +377,16 @@
             
             if (surveyorMarkers[sid]) {
                 surveyorMarkers[sid].setLatLng([lat, lng]);
-                surveyorMarkers[sid].getPopup().setContent(`<b>${username}</b><br>Updated: ${timestamp}`);
+                surveyorMarkers[sid].getPopup().setContent(`<b>${username}</b><br>📍 ${lat.toFixed(6)}, ${lng.toFixed(6)}<br>🕐 ${timestamp}`);
             } else {
                 let marker = L.marker([lat, lng]).addTo(map)
-                    .bindPopup(`<b>${username}</b><br>Updated: ${timestamp}`);
+                    .bindPopup(`<b>${username}</b><br>📍 ${lat.toFixed(6)}, ${lng.toFixed(6)}<br>🕐 ${timestamp}`);
                 surveyorMarkers[sid] = marker;
+                
+                // Fit map to show all markers
+                if (Object.keys(surveyorMarkers).length === 1) {
+                    map.setView([lat, lng], 15);
+                }
             }
         }
 
@@ -209,10 +414,33 @@
             const chatBox = document.getElementById('chat-box');
             const div = document.createElement('div');
             div.className = 'msg';
-            div.innerHTML = `<strong>${data.sender}</strong> (${data.role}) <span>${data.timestamp}</span>: <br>${data.message}`;
+            
+            if (data.sender === 'System') {
+                div.innerHTML = `<span class="system">🔔 ${data.message}</span>`;
+            } else {
+                div.innerHTML = `<strong>${data.sender}</strong> <span>${data.timestamp}</span><br>${data.message}`;
+            }
             chatBox.appendChild(div);
             chatBox.scrollTop = chatBox.scrollHeight;
         }
+
+        function leaveRoom() {
+            if (locationTimer) {
+                clearInterval(locationTimer);
+                locationTimer = null;
+            }
+            socket.disconnect();
+            location.reload();
+        }
+
+        // Handle disconnect
+        socket.on('disconnect', function() {
+            console.log('Disconnected from server');
+        });
+
+        socket.on('connect', function() {
+            console.log('Connected to server');
+        });
     </script>
 </body>
 </html>
