@@ -1,0 +1,23 @@
+# .gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+venv3/
+ENV/
+env.bak/
+venv.bak/
+tracking_data/*.json
+.DS_Store
+*.log
+.env
+*.db
+*.sqlite3
+*.sqlite
+.vscode/
+.idea/
+*.swp
+*.swo
