@@ -197,8 +197,50 @@ with tab4:
 # =========================================================
 # TAB 5: REAL-TIME TRACKING (PLACEHOLDER)
 # =========================================================
+# In the Real-Time Tracking tab of app.py, replace the placeholder with:
+
 with tab5:
     st.header("📍 Real-Time Tracking & Visualization")
     st.caption("Stream spatial positions live and plot trajectory data.")
-    st.text_input("NMEA / RTCM Stream URL", "tcp://127.0.0.1:9000")
-    st.map(data={"lat": [1.4927], "lon": [103.7414]}, zoom=12)
+    
+    # Add tracking server link
+    st.markdown("""
+    ### 🔗 Access Real-Time Tracking Interface
+    
+    Click the button below to open the real-time tracking interface in a new tab:
+    """)
+    
+    if st.button("🚀 Open Tracking Interface", use_container_width=True):
+        import webbrowser
+        webbrowser.open_new_tab("http://localhost:5000/tracking")
+    
+    st.divider()
+    
+    st.markdown("""
+    ### 📡 About the Tracking System
+    
+    - **Control Center**: Monitor field workers' locations in real-time
+    - **Site Surveyor**: Share your GPS location automatically
+    - **Live Chat**: Communicate between office and field teams
+    - **Export Data**: Download location logs and chat history
+    
+    #### How to Use:
+    1. Open the tracking interface (click button above)
+    2. Create a room with a password
+    3. Share the Room ID and Password with your team
+    4. Control Center users monitor, Site Surveyors share location
+    """)
+    
+    # You can also embed the tracking interface using an iframe
+    st.markdown("""
+    ### 📍 Live Tracking Preview
+    """)
+    
+    # Optional: Embed the tracking interface
+    iframe_html = """
+    <iframe src="http://localhost:5000/tracking" width="100%" height="500" frameborder="0" style="border-radius: 8px;"></iframe>
+    """
+    st.components.v1.html(iframe_html, height=520)
+
+
+
