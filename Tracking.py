@@ -9,7 +9,6 @@ from flask_socketio import emit, join_room, leave_room
 tracking_bp = Blueprint('tracking', __name__, template_folder='templates')
 
 # In-memory data store for room sessions
-# Format: { room_id: { "password": str, "chat": [list], "locations": [list], "members": {sid: role} } }
 ROOMS = {}
 
 def init_socket_events(socketio):
