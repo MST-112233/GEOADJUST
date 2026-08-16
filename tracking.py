@@ -1,4 +1,4 @@
-# tracking.py - Updated with file-based persistence for production
+# tracking.py
 import csv
 import io
 import json
@@ -9,7 +9,7 @@ from flask_socketio import emit, join_room, leave_room
 
 tracking_bp = Blueprint('tracking', __name__, template_folder='templates')
 
-# Use file-based storage for persistence across restarts
+# Use file-based storage for persistence
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'tracking_data')
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -17,17 +17,23 @@ def load_rooms():
     """Load room data from disk"""
     rooms_file = os.path.join(DATA_DIR, 'rooms.json')
     if os.path.exists(rooms_file):
-        with open(rooms_file, 'r') as f:
-            return json.load(f)
+        try:
+            with open(rooms_file, 'r') as f:
+                return json.load(f)
+        except:
+            return {}
     return {}
 
 def save_rooms(rooms):
     """Save room data to disk"""
     rooms_file = os.path.join(DATA_DIR, 'rooms.json')
-    with open(rooms_file, 'w') as f:
-        json.dump(rooms, f, default=str)
+    try:
+        with open(rooms_file, 'w') as f:
+            json.dump(rooms, f, default=str)
+    except:
+        pass
 
-# In-memory cache with disk backup
+# Load existing rooms
 ROOMS = load_rooms()
 
 def init_socket_events(socketio):
@@ -44,7 +50,7 @@ def init_socket_events(socketio):
             emit('error_response', {'message': 'Room ID, Password, and Role are required.'})
             return
 
-        # Ensure room exists
+        # Initialize room if it doesn't exist
         if room_id not in ROOMS:
             ROOMS[room_id] = {
                 'password': password,
@@ -53,6 +59,7 @@ def init_socket_events(socketio):
                 'members': {}
             }
         else:
+            # Validate password for existing room
             if ROOMS[room_id]['password'] != password:
                 emit('error_response', {'message': 'Incorrect room password.'})
                 return
@@ -62,10 +69,11 @@ def init_socket_events(socketio):
             'username': username,
             'role': role
         }
-        
-        # Save to disk periodically
+
+        # Save to disk
         save_rooms(ROOMS)
 
+        # Send historic chat and current active locations to newly joined user
         emit('join_success', {
             'room_id': room_id,
             'role': role,
@@ -73,6 +81,7 @@ def init_socket_events(socketio):
             'locations_history': ROOMS[room_id]['locations'][-20:]  # Last 20 locations
         })
 
+        # Announce arrival in chat
         sys_msg = {
             'sender': 'System',
             'role': 'System',
@@ -109,6 +118,7 @@ def init_socket_events(socketio):
         if room_id in ROOMS and request.sid in ROOMS[room_id]['members']:
             user_info = ROOMS[room_id]['members'][request.sid]
             
+            # Only Site Surveyors push location records
             if user_info['role'] == 'Site Surveyor':
                 location_entry = {
                     'sid': request.sid,
@@ -118,6 +128,8 @@ def init_socket_events(socketio):
                     'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 }
                 ROOMS[room_id]['locations'].append(location_entry)
+
+                # Broadcast live position to all room subscribers
                 emit('location_broadcast', location_entry, to=room_id)
                 
                 # Save less frequently for performance
@@ -144,6 +156,7 @@ def init_socket_events(socketio):
                 break
 
 
+# HTTP Routes for Web Access & Downloads
 @tracking_bp.route('/tracking')
 def tracking_page():
     return render_template('tracking.html')
@@ -154,14 +167,16 @@ def download_locations(room_id):
     req_password = request.form.get('password')
     role = request.form.get('role')
 
+    # Security check: Only Control Center can download logs
     if role != 'Control Center':
-        return jsonify({'error': 'Unauthorized access.'}), 403
+        return jsonify({'error': 'Unauthorized access. Only Control Center can download records.'}), 403
 
     if room_id not in ROOMS or ROOMS[room_id]['password'] != req_password:
         return jsonify({'error': 'Invalid Room ID or Password.'}), 400
 
     locations = ROOMS[room_id]['locations']
     
+    # Generate CSV in-memory
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(['Timestamp', 'Surveyor Name', 'Latitude', 'Longitude'])
@@ -181,13 +196,14 @@ def download_chat(room_id):
     role = request.form.get('role')
 
     if role != 'Control Center':
-        return jsonify({'error': 'Unauthorized access.'}), 403
+        return jsonify({'error': 'Unauthorized access. Only Control Center can download records.'}), 403
 
     if room_id not in ROOMS or ROOMS[room_id]['password'] != req_password:
         return jsonify({'error': 'Invalid Room ID or Password.'}), 400
 
     chat_history = ROOMS[room_id]['chat']
     
+    # Generate TXT in-memory
     output = io.StringIO()
     output.write(f"=== GEOADJUST CHAT LOGS FOR ROOM: {room_id} ===\n\n")
 
@@ -202,8 +218,18 @@ def download_chat(room_id):
 
 @tracking_bp.route('/api/rooms', methods=['GET'])
 def list_rooms():
-    """API endpoint to list all active rooms (for monitoring)"""
+    """API endpoint to list all active rooms"""
     return jsonify({
         'rooms': list(ROOMS.keys()),
         'count': len(ROOMS)
+    })
+
+
+@tracking_bp.route('/api/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for Render.com"""
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'rooms_count': len(ROOMS)
     })
