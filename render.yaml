@@ -4,9 +4,9 @@ services:
     name: geoadjust-tracking
     runtime: python
     plan: free
-    region: singapore  # Choose: ohio, virginia, frankfurt, singapore, oregon
+    region: singapore
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn -k geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 updated_app:app
+    startCommand: gunicorn -k geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 --bind 0.0.0.0:$PORT updated_app:app
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
@@ -14,5 +14,5 @@ services:
         generateValue: true
       - key: PORT
         value: 5000
-    healthCheckPath: /api/health
+    healthCheckPath: /health
     autoDeploy: true
