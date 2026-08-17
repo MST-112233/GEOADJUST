@@ -30,7 +30,9 @@ def index():
 def health():
     return jsonify({'status': 'healthy', 'service': 'geoadjust-tracking'})
 
-# For Render.com with Gunicorn
+# For Render.com - THIS IS THE IMPORTANT PART
 if __name__ == '__main__':
+    # Get port from environment or default to 5000
     port = int(os.environ.get('PORT', 5000))
+    print(f"🚀 Starting server on port {port}")
     socketio.run(app, host='0.0.0.0', port=port, debug=False)
