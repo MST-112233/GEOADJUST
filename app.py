@@ -38,11 +38,9 @@ st.markdown(
 )
 
 # --- 2. Main Navigation Tabs ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3 = st.tabs([
     "📏 1D Levelling",
-    "📐 2D Traversing",
     "🛰️ 3D GNSS",
-    "🗺️ Map Projection",
     "📍 Real-Time Tracking",
 ])
 
