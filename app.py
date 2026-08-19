@@ -408,15 +408,15 @@ with tab2:
 with tab3:
     st.header("📍 Real-Time Tracking & Room Chat")
     
+    # Sidebar controls specifically for Tab 3
+    user_id = st.sidebar.text_input("User ID / Call Sign:", value="Surveyor_1", key="track_user_id")
+    is_admin = st.sidebar.checkbox("Control Center Mode", key="track_admin")
+    
     # Refresh app state every 10 seconds (10,000 ms)
     st_autorefresh(interval=10000, key="tracking_autorefresh")
     
     try:
         supabase = init_supabase()
-
-        # User Roles and Call Signs
-        user_id = st.sidebar.text_input("User ID / Call Sign:", value="Surveyor_1", key="track_user_id")
-        is_admin = st.sidebar.checkbox("Control Center Mode", key="track_admin")
 
         # Get Browser Location via JS
         loc = get_geolocation()
@@ -483,6 +483,9 @@ with tab3:
                         mime="text/csv",
                         use_container_width=True
                     )
+                    
+    except Exception as e:
+        st.error(f"Failed to connect to backend: {e}")
                     
     except Exception as e:
         st.error(f"Failed to connect to backend: {e}")
