@@ -2,11 +2,23 @@ import io
 import os
 import pandas as pd
 import streamlit as st
+from supabase import create_client
+from streamlit_autorefresh import st_autorefresh
+from streamlit_js_eval import get_geolocation
+
 from network_1d import adjust_1d_network
 from network_3d import adjust_3d_network
 
 # --- 1. Page Configuration ---
 st.set_page_config(page_title="GEOADJUST", page_icon="🌐", layout="wide")
+
+# Supabase Credentials (Replace with your actual copied credentials)
+SUPABASE_URL = "https://oqgmnsfxtmpbnqyqnqcg.supabase.co"
+SUPABASE_KEY = "YOUR_SUPABASE_ANON_KEY"
+
+@st.cache_resource
+def init_supabase():
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Custom Styling
 st.markdown(
@@ -199,7 +211,7 @@ with tab1:
             )
 
 # =========================================================
-# TAB 3: 3D GNSS NETWORK ADJUSTMENT
+# TAB 2: 3D GNSS NETWORK ADJUSTMENT
 # =========================================================
 with tab2:
     st.header("🛰️ 3D GNSS Vector Network Adjustment")
@@ -390,82 +402,87 @@ with tab2:
             )
 
 
-
 # =========================================================
-# TAB 5: REAL-TIME TRACKING
+# TAB 3: REAL-TIME TRACKING (NATIVE INTEGRATION)
 # =========================================================
 with tab3:
-    st.header("📍 Real-Time Tracking & Visualization")
-    st.caption("Stream spatial positions live and plot trajectory data.")
-
-    TRACKING_URL = "https://geoadjust-tracking.onrender.com"
-
-    st.markdown("""
-    ### 🔗 Access Real-Time Tracking Interface
-
-    Click the button below to open the real-time tracking interface in a new tab:
-    """)
-
-    st.markdown(
-        f'<a href="{TRACKING_URL}/tracking" target="_blank" style="text-decoration: none;">',
-        unsafe_allow_html=True,
-    )
-    st.button(
-        "🚀 Open Tracking Interface", use_container_width=True, type="primary"
-    )
-    st.markdown("</a>", unsafe_allow_html=True)
-
-    st.divider()
-
-    st.markdown("### 📡 Server Status")
+    st.header("📍 Real-Time Tracking & Room Chat")
+    
+    # Refresh app state every 10 seconds (10,000 ms)
+    st_autorefresh(interval=10000, key="tracking_autorefresh")
+    
     try:
-        import requests
+        supabase = init_supabase()
 
-        response = requests.get(f"{TRACKING_URL}/api/health", timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            st.success(
-                "✅ Tracking server is online!"
-                f" ({data['rooms_count']} active room(s))"
-            )
+        # User Roles and Call Signs
+        user_id = st.sidebar.text_input("User ID / Call Sign:", value="Surveyor_1", key="track_user_id")
+        is_admin = st.sidebar.checkbox("Control Center Mode", key="track_admin")
+
+        # Get Browser Location via JS
+        loc = get_geolocation()
+        if loc and 'coords' in loc:
+            lat = loc['coords']['latitude']
+            lon = loc['coords']['longitude']
+            
+            # Send location update to Supabase
+            supabase.table("user_locations").upsert({
+                "user_id": user_id,
+                "latitude": lat,
+                "longitude": lon
+            }).execute()
+            st.sidebar.success(f"GPS Updated: {lat:.4f}, {lon:.4f}")
         else:
-            st.warning(
-                "⚠️ Server is reachable but returned unexpected response"
-            )
+            st.sidebar.warning("Awaiting Browser GPS Permissions...")
+
+        col1_track, col2_track = st.columns([2, 1])
+
+        # Map Column
+        with col1_track:
+            st.subheader("🗺️ Live User Map")
+            loc_response = supabase.table("user_locations").select("*").execute()
+            locations_df = pd.DataFrame(loc_response.data)
+
+            if not locations_df.empty:
+                st.map(locations_df, latitude="latitude", longitude="longitude")
+                st.dataframe(locations_df[['user_id', 'latitude', 'longitude', 'updated_at']], use_container_width=True)
+            else:
+                st.info("No active users online.")
+
+        # Chat Column
+        with col2_track:
+            st.subheader("💬 Room Chat")
+            
+            with st.form("send_chat_form", clear_on_submit=True):
+                chat_msg = st.text_input("Message:")
+                btn_send = st.form_submit_button("Send")
+                if btn_send and chat_msg:
+                    supabase.table("room_chats").insert({
+                        "user_id": user_id,
+                        "message": chat_msg
+                    }).execute()
+
+            # Retrieve Chat Log
+            chat_response = supabase.table("room_chats").select("*").order("created_at", desc=True).limit(20).execute()
+            chat_df = pd.DataFrame(chat_response.data)
+
+            if not chat_df.empty:
+                for _, row in chat_df.iterrows():
+                    st.write(f"**{row['user_id']}**: {row['message']}")
+
+                # Download Chat Feature for Admin
+                if is_admin:
+                    st.markdown("---")
+                    all_chats = supabase.table("room_chats").select("*").order("created_at", asc=True).execute()
+                    export_df = pd.DataFrame(all_chats.data)
+                    csv_logs = export_df.to_csv(index=False).encode('utf-8')
+                    
+                    st.download_button(
+                        label="📥 Download Chat Log (CSV)",
+                        data=csv_logs,
+                        file_name="chat_history.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                    
     except Exception as e:
-        st.error(
-            "❌ Cannot connect to tracking server. Please ensure it's running."
-        )
-        st.info(f"Server URL: {TRACKING_URL}")
-
-    st.divider()
-
-    st.markdown("""
-    ### 📋 How to Use the Tracking System
-
-    #### 🏢 Control Center (Office):
-    1. Click "Open Tracking Interface"
-    2. Enter a Room Name (e.g., "Project Alpha")
-    3. Set a password (remember it!)
-    4. Select "Control Center" as role
-    5. Click "Enter Room"
-    6. Share Room ID and Password with field teams
-
-    #### 🔧 Site Surveyors (Field):
-    1. Open the tracking interface
-    2. Enter the Room ID provided by Control Center
-    3. Enter the room password
-    4. Select "Site Surveyor" as role
-    5. Click "Enter Room"
-    6. Grant location permissions when prompted
-    7. Your location will automatically update every 10 seconds
-
-    #### ✨ Features:
-    - 📍 Real-time GPS tracking on interactive map
-    - 💬 Live chat between office and field teams
-    - 📊 Export location logs (CSV)
-    - 📝 Export chat history (TXT)
-    - 👥 Multiple users supported
-    - 🌐 Works across WiFi and mobile data
-    - 🔒 Room-based security with passwords
-    """)
+        st.error(f"Failed to connect to backend: {e}")
