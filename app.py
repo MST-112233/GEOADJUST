@@ -201,21 +201,6 @@ with tab1:
             )
 
 # =========================================================
-# TAB 2: 2D TRAVERSING MODULE (PLACEHOLDER)
-# =========================================================
-with tab2:
-    st.header("📐 2D Network Adjustment (Traversing)")
-    st.caption(
-        "2D least-squares adjustment for distance, horizontal angle, and"
-        " azimuth observations."
-    )
-    st.file_uploader("Upload Control Points (.csv)", type=["csv"], key="2d_pts")
-    st.file_uploader(
-        "Upload Distance/Angle Obs (.csv)", type=["csv"], key="2d_obs"
-    )
-    st.info("📌 Module logic ready for 2D computation code.")
-
-# =========================================================
 # TAB 3: 3D GNSS NETWORK ADJUSTMENT
 # =========================================================
 with tab3:
@@ -406,25 +391,7 @@ with tab3:
                 use_container_width=True,
             )
 
-# =========================================================
-# TAB 4: MAP PROJECTION (PLACEHOLDER)
-# =========================================================
-with tab4:
-    st.header("🗺️ Map Projection & Transformations")
-    st.caption(
-        "Convert between Geographic (Lat/Lon) and Projected Coordinates"
-        " (UTM/Local)."
-    )
-    c1, c2 = st.columns(2)
-    with c1:
-        st.selectbox(
-            "Transformation Type", ["Geographic to UTM", "UTM to Geographic"]
-        )
-        st.number_input("Latitude / Northing", value=1.4927)
-    with c2:
-        st.number_input("Longitude / Easting", value=103.7414)
-        st.selectbox("Ellipsoid", ["WGS84", "GRS80", "Kertau 1948"])
-    st.info("📌 Module logic ready for projection math.")
+
 
 # =========================================================
 # TAB 5: REAL-TIME TRACKING
