@@ -201,7 +201,7 @@ with tab1:
 # =========================================================
 # TAB 3: 3D GNSS NETWORK ADJUSTMENT
 # =========================================================
-with tab3:
+with tab2:
     st.header("🛰️ 3D GNSS Vector Network Adjustment")
     st.caption(
         "MATLAB-Aligned Parametric 3D Geodetic Vector Least Squares Adjustment"
@@ -394,7 +394,7 @@ with tab3:
 # =========================================================
 # TAB 5: REAL-TIME TRACKING
 # =========================================================
-with tab5:
+with tab3:
     st.header("📍 Real-Time Tracking & Visualization")
     st.caption("Stream spatial positions live and plot trajectory data.")
 
