@@ -13,8 +13,8 @@ from network_3d import adjust_3d_network
 st.set_page_config(page_title="GEOADJUST", page_icon="🌐", layout="wide")
 
 # Supabase Credentials (Replace with your actual copied credentials)
-SUPABASE_URL = "https://oqgmnsfxtmpbnqyqnqcg.supabase.co"
-SUPABASE_KEY = "YOUR_SUPABASE_ANON_KEY"
+SUPABASE_URL = "https://oqgmnsfxtmpbnqyqnqcg.supabase.co" 
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9xZ21uc2Z4dG1wYm5xeXFucWNnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcwNjQ0MDksImV4cCI6MjEwMjY0MDQwOX0.8rSeA3bzCk2cZp6vPP43XipQTfrRAIRWUfONjEwdKwk"
 
 @st.cache_resource
 def init_supabase():
