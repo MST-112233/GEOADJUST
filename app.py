@@ -2,7 +2,6 @@ import io
 import os
 import pandas as pd
 import streamlit as st
-from supabase import create_client
 from streamlit_autorefresh import st_autorefresh
 from streamlit_js_eval import get_geolocation
 
@@ -11,14 +10,6 @@ from network_3d import adjust_3d_network
 
 # --- 1. Page Configuration ---
 st.set_page_config(page_title="GEOADJUST", page_icon="🌐", layout="wide")
-
-# Supabase Credentials (Replace with your actual copied credentials)
-SUPABASE_URL = "https://oqgmnsfxtmpbnqyqnqcg.supabase.co" 
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9xZ21uc2Z4dG1wYm5xeXFucWNnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcwNjQ0MDksImV4cCI6MjEwMjY0MDQwOX0.8rSeA3bzCk2cZp6vPP43XipQTfrRAIRWUfONjEwdKwk"
-
-@st.cache_resource
-def init_supabase():
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Custom Styling
 st.markdown(
@@ -402,11 +393,9 @@ with tab2:
             )
 
 # =========================================================
-# TAB 3: REAL-TIME TRACKING (TEMPORARY IN-MEMORY MODULE)
+# TAB 3: REAL-TIME TRACKING (IN-MEMORY NO-DATABASE MODULE)
 # =========================================================
 with tab3:
-    # --- 1. Global In-Memory Storage Initialization ---
-    # Stores room data temporarily in session memory without any SQL database
     if "global_rooms" not in st.session_state:
         st.session_state["global_rooms"] = {}
 
@@ -421,7 +410,6 @@ with tab3:
 
     session = st.session_state["user_room_session"]
 
-    # --- 2. Room Login & Access Form ---
     if not session["authenticated"]:
         st.markdown("<br>", unsafe_allow_html=True)
         login_col1, login_col2, login_col3 = st.columns([1, 2, 1])
@@ -458,19 +446,17 @@ with tab3:
                     else:
                         room_key = input_room.strip()
 
-                        # Validate password if room already exists in temporary memory
                         if room_key in st.session_state["global_rooms"]:
                             existing_pass = st.session_state["global_rooms"][room_key]["password"]
                             if existing_pass != input_pass:
                                 st.error("Incorrect Password for this active room!")
                                 st.stop()
                         else:
-                            # Create new temporary room in memory
                             st.session_state["global_rooms"][room_key] = {
                                 "password": input_pass,
-                                "locations": {},        # { user_id: {lat, lon, updated_at} }
-                                "location_history": [], # list of all recorded points
-                                "chat_history": [],     # list of all messages
+                                "locations": {},
+                                "location_history": [],
+                                "chat_history": [],
                             }
 
                         session["authenticated"] = True
@@ -484,20 +470,17 @@ with tab3:
                 "⚠️ **Notice**: GEOADJUST does not store any data permanently. Download your tracking/chat logs before leaving!"
             )
 
-    # --- 3. Active Room Engine ---
     else:
         current_room = session["room_id"]
         user_id = session["username"]
         is_admin = "Control Center" in session["role"]
         room_data = st.session_state["global_rooms"].get(current_room)
 
-        # Handle edge-case if room memory was cleared
         if not room_data:
             st.error("Room session expired or server restarted.")
             session["authenticated"] = False
             st.rerun()
 
-        # Top Navigation & Status Bar
         head_col1, head_col2 = st.columns([3, 1])
         with head_col1:
             st.subheader(f"📍 Room: `{current_room}`")
@@ -506,16 +489,13 @@ with tab3:
             )
         with head_col2:
             if st.button("🚪 Leave Room", use_container_width=True):
-                # Remove active marker on exit
                 if user_id in room_data["locations"]:
                     del room_data["locations"][user_id]
                 session["authenticated"] = False
                 st.rerun()
 
-        # Auto-refresh app and trigger location capture every 10 seconds
         st_autorefresh(interval=10000, key="tracking_autorefresh")
 
-        # --- Location Tracking Logic ---
         loc = get_geolocation()
         current_time_str = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -523,7 +503,6 @@ with tab3:
             lat = loc["coords"]["latitude"]
             lon = loc["coords"]["longitude"]
 
-            # 1. Update live active point in memory
             room_data["locations"][user_id] = {
                 "user_id": user_id,
                 "latitude": lat,
@@ -531,7 +510,6 @@ with tab3:
                 "updated_at": current_time_str,
             }
 
-            # 2. Append to temporary track history log
             room_data["location_history"].append({
                 "room_id": current_room,
                 "user_id": user_id,
@@ -544,10 +522,8 @@ with tab3:
         else:
             st.sidebar.warning("⏳ Awaiting Browser GPS Permissions...")
 
-        # --- Dashboard Layout ---
         col_map, col_chat = st.columns([2, 1])
 
-        # --- Left Column: Map & Active Members ---
         with col_map:
             st.subheader("🗺️ Live Team Map")
 
@@ -565,11 +541,9 @@ with tab3:
             else:
                 st.info("No active team members sharing GPS coordinates in this room.")
 
-        # --- Right Column: Chat Room ---
         with col_chat:
             st.subheader("💬 Temporary Room Chat")
 
-            # Chat Input Form
             with st.form("send_chat_form", clear_on_submit=True):
                 chat_msg = st.text_input("Message:")
                 btn_send = st.form_submit_button("Send", use_container_width=True)
@@ -583,25 +557,21 @@ with tab3:
                     })
                     st.rerun()
 
-            # Display Chat Messages
             st.markdown("---")
             if room_data["chat_history"]:
                 chat_container = st.container(height=250)
                 with chat_container:
-                    # Show messages starting from newest
                     for msg in reversed(room_data["chat_history"]):
                         st.markdown(f"**{msg['user_id']}** ({msg['sent_at'].split(' ')[1]}): {msg['message']}")
             else:
                 st.caption("No chat messages sent yet.")
 
-        # --- Export & Download Data Section ---
         st.markdown("---")
         st.subheader("💾 Export & Download Session Data")
         st.caption("Download your location track logs and room chats before closing your browser or leaving the room.")
 
         down_col1, down_col2 = st.columns(2)
 
-        # Download 1: Location Tracking History
         with down_col1:
             if room_data["location_history"]:
                 df_loc_export = pd.DataFrame(room_data["location_history"])
@@ -617,7 +587,6 @@ with tab3:
             else:
                 st.info("No GPS tracks recorded yet to download.")
 
-        # Download 2: Room Chat History
         with down_col2:
             if room_data["chat_history"]:
                 df_chat_export = pd.DataFrame(room_data["chat_history"])
@@ -632,6 +601,3 @@ with tab3:
                 )
             else:
                 st.info("No chat logs recorded yet to download.")
-
-        except Exception as e:
-            st.error(f"Failed to communicate with real-time backend: {e}")
