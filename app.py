@@ -401,91 +401,249 @@ with tab2:
                 use_container_width=True,
             )
 
-
 # =========================================================
-# TAB 3: REAL-TIME TRACKING (NATIVE INTEGRATION)
+# TAB 3: REAL-TIME TRACKING (ROOM-BASED ISOLATED MODULE)
 # =========================================================
 with tab3:
-    st.header("📍 Real-Time Tracking & Room Chat")
-    
-    # Sidebar controls specifically for Tab 3
-    user_id = st.sidebar.text_input("User ID / Call Sign:", value="Surveyor_1", key="track_user_id")
-    is_admin = st.sidebar.checkbox("Control Center Mode", key="track_admin")
-    
-    # Refresh app state every 10 seconds (10,000 ms)
-    st_autorefresh(interval=10000, key="tracking_autorefresh")
-    
-    try:
-        supabase = init_supabase()
+    # Initialize session state for room authentication
+    if "room_authenticated" not in st.session_state:
+        st.session_state["room_authenticated"] = False
+        st.session_state["room_id"] = ""
+        st.session_state["room_pass"] = ""
+        st.session_state["username"] = ""
+        st.session_state["role"] = ""
 
-        # Get Browser Location via JS
-        loc = get_geolocation()
-        if loc and 'coords' in loc:
-            lat = loc['coords']['latitude']
-            lon = loc['coords']['longitude']
-            
-            # Send location update to Supabase
-            supabase.table("user_locations").upsert({
-                "user_id": user_id,
-                "latitude": lat,
-                "longitude": lon
-            }).execute()
-            st.sidebar.success(f"GPS Updated: {lat:.4f}, {lon:.4f}")
-        else:
-            st.sidebar.warning("Awaiting Browser GPS Permissions...")
+    # --- Step 1: Room Login / Creation Interface ---
+    if not st.session_state["room_authenticated"]:
+        st.markdown("<br>", unsafe_allow_html=True)
+        login_col1, login_col2, login_col3 = st.columns([1, 2, 1])
 
-        col1_track, col2_track = st.columns([2, 1])
+        with login_col2:
+            st.markdown(
+                """
+                <div style="background-color: #ffffff; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); text-align: center;">
+                    <h2 style="color: #1E88E5; margin-bottom: 0px;">📍 GEOADJUST Tracking</h2>
+                    <p style="color: #666; font-size: 0.95rem; margin-bottom: 20px;">Real-Time Location Sharing & Communication</p>
+                </div>
+            """,
+                unsafe_allow_html=True,
+            )
 
-        # Map Column
-        with col1_track:
-            st.subheader("🗺️ Live User Map")
-            loc_response = supabase.table("user_locations").select("*").execute()
-            locations_df = pd.DataFrame(loc_response.data)
+            with st.form("room_login_form"):
+                input_user = st.text_input("👤 Username", value="User_1")
+                input_room = st.text_input("🏠 Room ID", value="DemoRoom")
+                input_pass = st.text_input(
+                    "🔑 Password", type="password", value="123456"
+                )
+                input_role = st.selectbox(
+                    "🎯 Role",
+                    ["Field Surveyor", "🏢 Control Center (Office)"],
+                )
 
-            if not locations_df.empty:
-                st.map(locations_df, latitude="latitude", longitude="longitude")
-                st.dataframe(locations_df[['user_id', 'latitude', 'longitude', 'updated_at']], use_container_width=True)
-            else:
-                st.info("No active users online.")
+                submit_login = st.form_submit_button(
+                    "🚀 Enter Room", use_container_width=True, type="primary"
+                )
 
-        # Chat Column
-        with col2_track:
-            st.subheader("💬 Room Chat")
-            
-            with st.form("send_chat_form", clear_on_submit=True):
-                chat_msg = st.text_input("Message:")
-                btn_send = st.form_submit_button("Send")
-                if btn_send and chat_msg:
-                    supabase.table("room_chats").insert({
+                if submit_login:
+                    if not input_user or not input_room or not input_pass:
+                        st.error(
+                            "Please complete all fields (Username, Room ID, Password)."
+                        )
+                    else:
+                        st.session_state["room_authenticated"] = True
+                        st.session_state["username"] = input_user
+                        st.session_state["room_id"] = input_room
+                        st.session_state["room_pass"] = input_pass
+                        st.session_state["role"] = input_role
+                        st.rerun()
+
+            st.info(
+                "💡 **Tip**: Share Room ID and Password with your team members to join the same room."
+            )
+
+    # --- Step 2: Main Real-Time Tracking Room Engine ---
+    else:
+        current_room = st.session_state["room_id"]
+        current_pass = st.session_state["room_pass"]
+        user_id = st.session_state["username"]
+        is_admin = (
+            "Control Center" in st.session_state["role"]
+        )  # Admin / Control Center status
+
+        # Top Control & Status Header
+        head_col1, head_col2 = st.columns([3, 1])
+        with head_col1:
+            st.subheader(f"📍 Room: `{current_room}`")
+            st.caption(
+                f"Logged in as **{user_id}** ({'Control Center Admin' if is_admin else 'Field Surveyor'})"
+            )
+        with head_col2:
+            if st.button("🚪 Leave Room", use_container_width=True):
+                st.session_state["room_authenticated"] = False
+                st.rerun()
+
+        # Auto-refresh UI and trigger GPS capture every 10 seconds (10,000 ms)
+        st_autorefresh(interval=10000, key="tracking_autorefresh")
+
+        try:
+            supabase = init_supabase()
+
+            # 1. Fetch Location via Browser GPS (Works via Mobile Data / Wi-Fi)
+            loc = get_geolocation()
+            if loc and "coords" in loc:
+                lat = loc["coords"]["latitude"]
+                lon = loc["coords"]["longitude"]
+
+                # Upsert current location in live users table (filtered by room_id and room_password)
+                supabase.table("user_locations").upsert(
+                    {
+                        "room_id": current_room,
+                        "room_password": current_pass,
                         "user_id": user_id,
-                        "message": chat_msg
-                    }).execute()
+                        "latitude": lat,
+                        "longitude": lon,
+                    }
+                ).execute()
 
-            # Retrieve Chat Log
-            chat_response = supabase.table("room_chats").select("*").order("created_at", desc=True).limit(20).execute()
-            chat_df = pd.DataFrame(chat_response.data)
+                # Automatically append record to history tracking log for admins
+                supabase.table("location_history").insert(
+                    {
+                        "room_id": current_room,
+                        "user_id": user_id,
+                        "latitude": lat,
+                        "longitude": lon,
+                    }
+                ).execute()
 
-            if not chat_df.empty:
-                for _, row in chat_df.iterrows():
-                    st.write(f"**{row['user_id']}**: {row['message']}")
+                st.sidebar.success(f"📡 GPS Updated: {lat:.5f}, {lon:.5f}")
+            else:
+                st.sidebar.warning("⏳ Awaiting Browser GPS Permissions...")
 
-                # Download Chat Feature for Admin
+            # --- Main Content Split: Map View vs Chat Room ---
+            col_map, col_chat = st.columns([2, 1])
+
+            # --- Left Panel: Map & Active Personnel ---
+            with col_map:
+                st.subheader("🗺️ Live Team Map")
+
+                # Fetch active locations restricted strictly to the current room and password
+                loc_res = (
+                    supabase.table("user_locations")
+                    .select("*")
+                    .eq("room_id", current_room)
+                    .eq("room_password", current_pass)
+                    .execute()
+                )
+                loc_df = pd.DataFrame(loc_res.data)
+
+                if not loc_df.empty:
+                    st.map(loc_df, latitude="latitude", longitude="longitude")
+
+                    st.markdown("**Active Team Members**")
+                    st.dataframe(
+                        loc_df[
+                            ["user_id", "latitude", "longitude", "updated_at"]
+                        ],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                else:
+                    st.info(
+                        "No active team members are sharing location in this room yet."
+                    )
+
+            # --- Right Panel: Chat Room & Admin Downloads ---
+            with col_chat:
+                st.subheader("💬 Room Chat")
+
+                # Chat Send Form
+                with st.form("send_chat_form", clear_on_submit=True):
+                    chat_msg = st.text_input("Message:")
+                    btn_send = st.form_submit_button(
+                        "Send", use_container_width=True
+                    )
+                    if btn_send and chat_msg:
+                        supabase.table("room_chats").insert(
+                            {
+                                "room_id": current_room,
+                                "room_password": current_pass,
+                                "user_id": user_id,
+                                "message": chat_msg,
+                            }
+                        ).execute()
+                        st.rerun()
+
+                # Display Latest 20 Chat Messages inside this Room
+                chat_res = (
+                    supabase.table("room_chats")
+                    .select("*")
+                    .eq("room_id", current_room)
+                    .eq("room_password", current_pass)
+                    .order("created_at", desc=True)
+                    .limit(20)
+                    .execute()
+                )
+                chat_df = pd.DataFrame(chat_res.data)
+
+                st.markdown("---")
+                if not chat_df.empty:
+                    chat_container = st.container(height=280)
+                    with chat_container:
+                        for _, row in chat_df.iterrows():
+                            st.markdown(
+                                f"**{row['user_id']}**: {row['message']}"
+                            )
+                else:
+                    st.caption("No messages in this room yet.")
+
+                # --- Control Center (Admin) Export Panel ---
                 if is_admin:
                     st.markdown("---")
-                    all_chats = supabase.table("room_chats").select("*").order("created_at", asc=True).execute()
-                    export_df = pd.DataFrame(all_chats.data)
-                    csv_logs = export_df.to_csv(index=False).encode('utf-8')
-                    
-                    st.download_button(
-                        label="📥 Download Chat Log (CSV)",
-                        data=csv_logs,
-                        file_name="chat_history.csv",
-                        mime="text/csv",
-                        use_container_width=True
+                    st.subheader("🛠️ Control Center Admin Tools")
+
+                    # 1. Download Chat Log CSV
+                    all_chats = (
+                        supabase.table("room_chats")
+                        .select("*")
+                        .eq("room_id", current_room)
+                        .order("created_at", asc=True)
+                        .execute()
                     )
-                    
-    except Exception as e:
-        st.error(f"Failed to connect to backend: {e}")
-                    
-    except Exception as e:
-        st.error(f"Failed to connect to backend: {e}")
+                    df_chats_export = pd.DataFrame(all_chats.data)
+
+                    if not df_chats_export.empty:
+                        csv_chats = df_chats_export.to_csv(index=False).encode(
+                            "utf-8"
+                        )
+                        st.download_button(
+                            label="📥 Download Chat History (.csv)",
+                            data=csv_chats,
+                            file_name=f"ChatHistory_{current_room}.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                        )
+
+                    # 2. Download Location Records CSV
+                    all_locs = (
+                        supabase.table("location_history")
+                        .select("*")
+                        .eq("room_id", current_room)
+                        .order("created_at", asc=True)
+                        .execute()
+                    )
+                    df_locs_export = pd.DataFrame(all_locs.data)
+
+                    if not df_locs_export.empty:
+                        csv_locs = df_locs_export.to_csv(index=False).encode(
+                            "utf-8"
+                        )
+                        st.download_button(
+                            label="📥 Download Location Records (.csv)",
+                            data=csv_locs,
+                            file_name=f"LocationHistory_{current_room}.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                        )
+
+        except Exception as e:
+            st.error(f"Failed to communicate with real-time backend: {e}")
