@@ -402,19 +402,27 @@ with tab2:
             )
 
 # =========================================================
-# TAB 3: REAL-TIME TRACKING (ROOM-BASED ISOLATED MODULE)
+# TAB 3: REAL-TIME TRACKING (TEMPORARY IN-MEMORY MODULE)
 # =========================================================
 with tab3:
-    # Initialize session state for room authentication
-    if "room_authenticated" not in st.session_state:
-        st.session_state["room_authenticated"] = False
-        st.session_state["room_id"] = ""
-        st.session_state["room_pass"] = ""
-        st.session_state["username"] = ""
-        st.session_state["role"] = ""
+    # --- 1. Global In-Memory Storage Initialization ---
+    # Stores room data temporarily in session memory without any SQL database
+    if "global_rooms" not in st.session_state:
+        st.session_state["global_rooms"] = {}
 
-    # --- Step 1: Room Login / Creation Interface ---
-    if not st.session_state["room_authenticated"]:
+    if "user_room_session" not in st.session_state:
+        st.session_state["user_room_session"] = {
+            "authenticated": False,
+            "room_id": "",
+            "room_pass": "",
+            "username": "",
+            "role": "",
+        }
+
+    session = st.session_state["user_room_session"]
+
+    # --- 2. Room Login & Access Form ---
+    if not session["authenticated"]:
         st.markdown("<br>", unsafe_allow_html=True)
         login_col1, login_col2, login_col3 = st.columns([1, 2, 1])
 
@@ -423,7 +431,7 @@ with tab3:
                 """
                 <div style="background-color: #ffffff; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); text-align: center;">
                     <h2 style="color: #1E88E5; margin-bottom: 0px;">📍 GEOADJUST Tracking</h2>
-                    <p style="color: #666; font-size: 0.95rem; margin-bottom: 20px;">Real-Time Location Sharing & Communication</p>
+                    <p style="color: #666; font-size: 0.95rem; margin-bottom: 20px;">Temporary Session-Based Location Sharing & Chat</p>
                 </div>
             """,
                 unsafe_allow_html=True,
@@ -446,31 +454,50 @@ with tab3:
 
                 if submit_login:
                     if not input_user or not input_room or not input_pass:
-                        st.error(
-                            "Please complete all fields (Username, Room ID, Password)."
-                        )
+                        st.error("Please fill in Username, Room ID, and Password.")
                     else:
-                        st.session_state["room_authenticated"] = True
-                        st.session_state["username"] = input_user
-                        st.session_state["room_id"] = input_room
-                        st.session_state["room_pass"] = input_pass
-                        st.session_state["role"] = input_role
+                        room_key = input_room.strip()
+
+                        # Validate password if room already exists in temporary memory
+                        if room_key in st.session_state["global_rooms"]:
+                            existing_pass = st.session_state["global_rooms"][room_key]["password"]
+                            if existing_pass != input_pass:
+                                st.error("Incorrect Password for this active room!")
+                                st.stop()
+                        else:
+                            # Create new temporary room in memory
+                            st.session_state["global_rooms"][room_key] = {
+                                "password": input_pass,
+                                "locations": {},        # { user_id: {lat, lon, updated_at} }
+                                "location_history": [], # list of all recorded points
+                                "chat_history": [],     # list of all messages
+                            }
+
+                        session["authenticated"] = True
+                        session["username"] = input_user.strip()
+                        session["room_id"] = room_key
+                        session["room_pass"] = input_pass
+                        session["role"] = input_role
                         st.rerun()
 
-            st.info(
-                "💡 **Tip**: Share Room ID and Password with your team members to join the same room."
+            st.warning(
+                "⚠️ **Notice**: GEOADJUST does not store any data permanently. Download your tracking/chat logs before leaving!"
             )
 
-    # --- Step 2: Main Real-Time Tracking Room Engine ---
+    # --- 3. Active Room Engine ---
     else:
-        current_room = st.session_state["room_id"]
-        current_pass = st.session_state["room_pass"]
-        user_id = st.session_state["username"]
-        is_admin = (
-            "Control Center" in st.session_state["role"]
-        )  # Admin / Control Center status
+        current_room = session["room_id"]
+        user_id = session["username"]
+        is_admin = "Control Center" in session["role"]
+        room_data = st.session_state["global_rooms"].get(current_room)
 
-        # Top Control & Status Header
+        # Handle edge-case if room memory was cleared
+        if not room_data:
+            st.error("Room session expired or server restarted.")
+            session["authenticated"] = False
+            st.rerun()
+
+        # Top Navigation & Status Bar
         head_col1, head_col2 = st.columns([3, 1])
         with head_col1:
             st.subheader(f"📍 Room: `{current_room}`")
@@ -479,171 +506,132 @@ with tab3:
             )
         with head_col2:
             if st.button("🚪 Leave Room", use_container_width=True):
-                st.session_state["room_authenticated"] = False
+                # Remove active marker on exit
+                if user_id in room_data["locations"]:
+                    del room_data["locations"][user_id]
+                session["authenticated"] = False
                 st.rerun()
 
-        # Auto-refresh UI and trigger GPS capture every 10 seconds (10,000 ms)
+        # Auto-refresh app and trigger location capture every 10 seconds
         st_autorefresh(interval=10000, key="tracking_autorefresh")
 
-        try:
-            supabase = init_supabase()
+        # --- Location Tracking Logic ---
+        loc = get_geolocation()
+        current_time_str = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            # 1. Fetch Location via Browser GPS (Works via Mobile Data / Wi-Fi)
-            loc = get_geolocation()
-            if loc and "coords" in loc:
-                lat = loc["coords"]["latitude"]
-                lon = loc["coords"]["longitude"]
+        if loc and "coords" in loc:
+            lat = loc["coords"]["latitude"]
+            lon = loc["coords"]["longitude"]
 
-                # Upsert current location in live users table (filtered by room_id and room_password)
-                supabase.table("user_locations").upsert(
-                    {
-                        "room_id": current_room,
-                        "room_password": current_pass,
-                        "user_id": user_id,
-                        "latitude": lat,
-                        "longitude": lon,
-                    }
-                ).execute()
+            # 1. Update live active point in memory
+            room_data["locations"][user_id] = {
+                "user_id": user_id,
+                "latitude": lat,
+                "longitude": lon,
+                "updated_at": current_time_str,
+            }
 
-                # Automatically append record to history tracking log for admins
-                supabase.table("location_history").insert(
-                    {
-                        "room_id": current_room,
-                        "user_id": user_id,
-                        "latitude": lat,
-                        "longitude": lon,
-                    }
-                ).execute()
+            # 2. Append to temporary track history log
+            room_data["location_history"].append({
+                "room_id": current_room,
+                "user_id": user_id,
+                "latitude": lat,
+                "longitude": lon,
+                "recorded_at": current_time_str,
+            })
 
-                st.sidebar.success(f"📡 GPS Updated: {lat:.5f}, {lon:.5f}")
+            st.sidebar.success(f"📡 GPS Updated: {lat:.5f}, {lon:.5f}")
+        else:
+            st.sidebar.warning("⏳ Awaiting Browser GPS Permissions...")
+
+        # --- Dashboard Layout ---
+        col_map, col_chat = st.columns([2, 1])
+
+        # --- Left Column: Map & Active Members ---
+        with col_map:
+            st.subheader("🗺️ Live Team Map")
+
+            active_locs_list = list(room_data["locations"].values())
+            if active_locs_list:
+                df_active = pd.DataFrame(active_locs_list)
+                st.map(df_active, latitude="latitude", longitude="longitude")
+
+                st.markdown("**Active Team Members**")
+                st.dataframe(
+                    df_active[["user_id", "latitude", "longitude", "updated_at"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
             else:
-                st.sidebar.warning("⏳ Awaiting Browser GPS Permissions...")
+                st.info("No active team members sharing GPS coordinates in this room.")
 
-            # --- Main Content Split: Map View vs Chat Room ---
-            col_map, col_chat = st.columns([2, 1])
+        # --- Right Column: Chat Room ---
+        with col_chat:
+            st.subheader("💬 Temporary Room Chat")
 
-            # --- Left Panel: Map & Active Personnel ---
-            with col_map:
-                st.subheader("🗺️ Live Team Map")
+            # Chat Input Form
+            with st.form("send_chat_form", clear_on_submit=True):
+                chat_msg = st.text_input("Message:")
+                btn_send = st.form_submit_button("Send", use_container_width=True)
 
-                # Fetch active locations restricted strictly to the current room and password
-                loc_res = (
-                    supabase.table("user_locations")
-                    .select("*")
-                    .eq("room_id", current_room)
-                    .eq("room_password", current_pass)
-                    .execute()
+                if btn_send and chat_msg:
+                    room_data["chat_history"].append({
+                        "room_id": current_room,
+                        "user_id": user_id,
+                        "message": chat_msg,
+                        "sent_at": current_time_str,
+                    })
+                    st.rerun()
+
+            # Display Chat Messages
+            st.markdown("---")
+            if room_data["chat_history"]:
+                chat_container = st.container(height=250)
+                with chat_container:
+                    # Show messages starting from newest
+                    for msg in reversed(room_data["chat_history"]):
+                        st.markdown(f"**{msg['user_id']}** ({msg['sent_at'].split(' ')[1]}): {msg['message']}")
+            else:
+                st.caption("No chat messages sent yet.")
+
+        # --- Export & Download Data Section ---
+        st.markdown("---")
+        st.subheader("💾 Export & Download Session Data")
+        st.caption("Download your location track logs and room chats before closing your browser or leaving the room.")
+
+        down_col1, down_col2 = st.columns(2)
+
+        # Download 1: Location Tracking History
+        with down_col1:
+            if room_data["location_history"]:
+                df_loc_export = pd.DataFrame(room_data["location_history"])
+                csv_locs = df_loc_export.to_csv(index=False).encode("utf-8")
+
+                st.download_button(
+                    label="📥 Download GPS Track Log (.csv)",
+                    data=csv_locs,
+                    file_name=f"GPS_Track_{current_room}_{user_id}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
                 )
-                loc_df = pd.DataFrame(loc_res.data)
+            else:
+                st.info("No GPS tracks recorded yet to download.")
 
-                if not loc_df.empty:
-                    st.map(loc_df, latitude="latitude", longitude="longitude")
+        # Download 2: Room Chat History
+        with down_col2:
+            if room_data["chat_history"]:
+                df_chat_export = pd.DataFrame(room_data["chat_history"])
+                csv_chats = df_chat_export.to_csv(index=False).encode("utf-8")
 
-                    st.markdown("**Active Team Members**")
-                    st.dataframe(
-                        loc_df[
-                            ["user_id", "latitude", "longitude", "updated_at"]
-                        ],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-                else:
-                    st.info(
-                        "No active team members are sharing location in this room yet."
-                    )
-
-            # --- Right Panel: Chat Room & Admin Downloads ---
-            with col_chat:
-                st.subheader("💬 Room Chat")
-
-                # Chat Send Form
-                with st.form("send_chat_form", clear_on_submit=True):
-                    chat_msg = st.text_input("Message:")
-                    btn_send = st.form_submit_button(
-                        "Send", use_container_width=True
-                    )
-                    if btn_send and chat_msg:
-                        supabase.table("room_chats").insert(
-                            {
-                                "room_id": current_room,
-                                "room_password": current_pass,
-                                "user_id": user_id,
-                                "message": chat_msg,
-                            }
-                        ).execute()
-                        st.rerun()
-
-                # Display Latest 20 Chat Messages inside this Room
-                chat_res = (
-                    supabase.table("room_chats")
-                    .select("*")
-                    .eq("room_id", current_room)
-                    .eq("room_password", current_pass)
-                    .order("created_at", desc=True)
-                    .limit(20)
-                    .execute()
+                st.download_button(
+                    label="📥 Download Room Chat Log (.csv)",
+                    data=csv_chats,
+                    file_name=f"Chat_Log_{current_room}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
                 )
-                chat_df = pd.DataFrame(chat_res.data)
-
-                st.markdown("---")
-                if not chat_df.empty:
-                    chat_container = st.container(height=280)
-                    with chat_container:
-                        for _, row in chat_df.iterrows():
-                            st.markdown(
-                                f"**{row['user_id']}**: {row['message']}"
-                            )
-                else:
-                    st.caption("No messages in this room yet.")
-
-                # --- Control Center (Admin) Export Panel ---
-                if is_admin:
-                    st.markdown("---")
-                    st.subheader("🛠️ Control Center Admin Tools")
-
-                    # 1. Download Chat Log CSV
-                    all_chats = (
-                        supabase.table("room_chats")
-                        .select("*")
-                        .eq("room_id", current_room)
-                        .order("created_at", asc=True)
-                        .execute()
-                    )
-                    df_chats_export = pd.DataFrame(all_chats.data)
-
-                    if not df_chats_export.empty:
-                        csv_chats = df_chats_export.to_csv(index=False).encode(
-                            "utf-8"
-                        )
-                        st.download_button(
-                            label="📥 Download Chat History (.csv)",
-                            data=csv_chats,
-                            file_name=f"ChatHistory_{current_room}.csv",
-                            mime="text/csv",
-                            use_container_width=True,
-                        )
-
-                    # 2. Download Location Records CSV
-                    all_locs = (
-                        supabase.table("location_history")
-                        .select("*")
-                        .eq("room_id", current_room)
-                        .order("created_at", asc=True)
-                        .execute()
-                    )
-                    df_locs_export = pd.DataFrame(all_locs.data)
-
-                    if not df_locs_export.empty:
-                        csv_locs = df_locs_export.to_csv(index=False).encode(
-                            "utf-8"
-                        )
-                        st.download_button(
-                            label="📥 Download Location Records (.csv)",
-                            data=csv_locs,
-                            file_name=f"LocationHistory_{current_room}.csv",
-                            mime="text/csv",
-                            use_container_width=True,
-                        )
+            else:
+                st.info("No chat logs recorded yet to download.")
 
         except Exception as e:
             st.error(f"Failed to communicate with real-time backend: {e}")
