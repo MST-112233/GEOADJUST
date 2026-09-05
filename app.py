@@ -2,6 +2,8 @@ import io
 import os
 import pandas as pd
 import streamlit as st
+import folium
+from streamlit_folium import st_folium
 from streamlit_autorefresh import st_autorefresh
 from streamlit_js_eval import get_geolocation
 
@@ -39,6 +41,16 @@ st.markdown(
     "<p class='sub-title'>Geodetic Network Adjustment & Spatial Toolkit</p>",
     unsafe_allow_html=True,
 )
+
+# --- GLOBAL CROSS-DEVICE MEMORY REGISTRY ---
+# This dictionary is shared across ALL devices/browsers connected to the app server instance.
+@st.cache_resource
+def get_global_room_registry():
+    return {}
+
+GLOBAL_ROOMS_REGISTRY = get_global_room_registry()
+
+COLOR_PALETTE = ["red", "blue", "green", "purple", "orange", "darkred", "cadetblue", "darkpurple", "pink"]
 
 # --- 2. Main Navigation Tabs ---
 tab1, tab2, tab3 = st.tabs([
@@ -393,12 +405,9 @@ with tab2:
             )
 
 # =========================================================
-# TAB 3: REAL-TIME TRACKING (IN-MEMORY NO-DATABASE MODULE)
+# TAB 3: REAL-TIME TRACKING (CROSS-DEVICE OPENSTREETMAP MODULE)
 # =========================================================
 with tab3:
-    if "global_rooms" not in st.session_state:
-        st.session_state["global_rooms"] = {}
-
     if "user_room_session" not in st.session_state:
         st.session_state["user_room_session"] = {
             "authenticated": False,
@@ -410,6 +419,7 @@ with tab3:
 
     session = st.session_state["user_room_session"]
 
+    # --- Step 1: Room Access Form ---
     if not session["authenticated"]:
         st.markdown("<br>", unsafe_allow_html=True)
         login_col1, login_col2, login_col3 = st.columns([1, 2, 1])
@@ -419,7 +429,7 @@ with tab3:
                 """
                 <div style="background-color: #ffffff; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); text-align: center;">
                     <h2 style="color: #1E88E5; margin-bottom: 0px;">📍 GEOADJUST Tracking</h2>
-                    <p style="color: #666; font-size: 0.95rem; margin-bottom: 20px;">Temporary Session-Based Location Sharing & Chat</p>
+                    <p style="color: #666; font-size: 0.95rem; margin-bottom: 20px;">Cross-Device Real-Time Location Sharing & Unified Chat</p>
                 </div>
             """,
                 unsafe_allow_html=True,
@@ -446,41 +456,51 @@ with tab3:
                     else:
                         room_key = input_room.strip()
 
-                        if room_key in st.session_state["global_rooms"]:
-                            existing_pass = st.session_state["global_rooms"][room_key]["password"]
+                        # Check or create room in global server memory
+                        if room_key in GLOBAL_ROOMS_REGISTRY:
+                            existing_pass = GLOBAL_ROOMS_REGISTRY[room_key]["password"]
                             if existing_pass != input_pass:
                                 st.error("Incorrect Password for this active room!")
                                 st.stop()
                         else:
-                            st.session_state["global_rooms"][room_key] = {
+                            GLOBAL_ROOMS_REGISTRY[room_key] = {
                                 "password": input_pass,
-                                "locations": {},
-                                "location_history": [],
-                                "chat_history": [],
+                                "locations": {},        # { user_id: {lat, lon, alt, acc, updated_at, color} }
+                                "unified_log": [],      # combined tracking & chat logs
+                                "user_colors": {},
                             }
 
+                        # Assign a persistent unique marker color to the user
+                        room_data = GLOBAL_ROOMS_REGISTRY[room_key]
+                        user_clean = input_user.strip()
+                        if user_clean not in room_data["user_colors"]:
+                            color_idx = len(room_data["user_colors"]) % len(COLOR_PALETTE)
+                            room_data["user_colors"][user_clean] = COLOR_PALETTE[color_idx]
+
                         session["authenticated"] = True
-                        session["username"] = input_user.strip()
+                        session["username"] = user_clean
                         session["room_id"] = room_key
                         session["room_pass"] = input_pass
                         session["role"] = input_role
                         st.rerun()
 
             st.warning(
-                "⚠️ **Notice**: GEOADJUST does not store any data permanently. Download your tracking/chat logs before leaving!"
+                "⚠️ **Notice**: GEOADJUST does not store data on a database server. All tracking and chat logs exist temporarily in active memory—download your CSV before leaving!"
             )
 
+    # --- Step 2: Active Tracking Room Engine ---
     else:
         current_room = session["room_id"]
         user_id = session["username"]
         is_admin = "Control Center" in session["role"]
-        room_data = st.session_state["global_rooms"].get(current_room)
+        room_data = GLOBAL_ROOMS_REGISTRY.get(current_room)
 
         if not room_data:
-            st.error("Room session expired or server restarted.")
+            st.error("Room session expired or room closed.")
             session["authenticated"] = False
             st.rerun()
 
+        # Top Control Bar
         head_col1, head_col2 = st.columns([3, 1])
         with head_col1:
             st.subheader(f"📍 Room: `{current_room}`")
@@ -494,110 +514,158 @@ with tab3:
                 session["authenticated"] = False
                 st.rerun()
 
+        # Auto-refresh UI and poll browser GPS every 10 seconds
         st_autorefresh(interval=10000, key="tracking_autorefresh")
 
+        # Capture Geolocation with Altitude & Accuracy
         loc = get_geolocation()
         current_time_str = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
 
         if loc and "coords" in loc:
-            lat = loc["coords"]["latitude"]
-            lon = loc["coords"]["longitude"]
+            coords = loc["coords"]
+            lat = coords.get("latitude")
+            lon = coords.get("longitude")
+            alt = coords.get("altitude") if coords.get("altitude") is not None else 0.0
+            acc = coords.get("accuracy") if coords.get("accuracy") is not None else 0.0
 
+            user_color = room_data["user_colors"].get(user_id, "blue")
+
+            # Update live marker state
             room_data["locations"][user_id] = {
                 "user_id": user_id,
                 "latitude": lat,
                 "longitude": lon,
+                "altitude_m": alt,
+                "accuracy_m": acc,
                 "updated_at": current_time_str,
+                "color": user_color,
             }
 
-            room_data["location_history"].append({
-                "room_id": current_room,
-                "user_id": user_id,
-                "latitude": lat,
-                "longitude": lon,
-                "recorded_at": current_time_str,
+            # Record to unified event log
+            room_data["unified_log"].append({
+                "Timestamp": current_time_str,
+                "Room_ID": current_room,
+                "User_ID": user_id,
+                "Event_Type": "GPS_UPDATE",
+                "Latitude": lat,
+                "Longitude": lon,
+                "Altitude_m": round(alt, 2),
+                "Accuracy_m": round(acc, 2),
+                "Chat_Message": "",
             })
 
-            st.sidebar.success(f"📡 GPS Updated: {lat:.5f}, {lon:.5f}")
+            st.sidebar.success(
+                f"📡 GPS Updated:\n* Lat/Lon: `{lat:.5f}, {lon:.5f}`\n* Alt: `{alt:.2f} m`\n* Acc: `±{acc:.2f} m`"
+            )
         else:
             st.sidebar.warning("⏳ Awaiting Browser GPS Permissions...")
 
+        # --- Main Layout Split ---
         col_map, col_chat = st.columns([2, 1])
 
+        # --- Left Column: OpenStreetMap with Custom User Pins ---
         with col_map:
-            st.subheader("🗺️ Live Team Map")
+            st.subheader("🗺️ Live OpenStreetMap")
 
-            active_locs_list = list(room_data["locations"].values())
-            if active_locs_list:
-                df_active = pd.DataFrame(active_locs_list)
-                st.map(df_active, latitude="latitude", longitude="longitude")
+            active_users = list(room_data["locations"].values())
+            if active_users:
+                # Center map on the first active user's location
+                avg_lat = active_users[0]["latitude"]
+                avg_lon = active_users[0]["longitude"]
 
+                m = folium.Map(location=[avg_lat, avg_lon], zoom_start=16, tiles="OpenStreetMap")
+
+                for u in active_users:
+                    popup_html = f"""
+                    <b>User:</b> {u['user_id']}<br>
+                    <b>Lat:</b> {u['latitude']:.5f}<br>
+                    <b>Lon:</b> {u['longitude']:.5f}<br>
+                    <b>Alt:</b> {u['altitude_m']:.2f} m<br>
+                    <b>Acc:</b> ±{u['accuracy_m']:.2f} m<br>
+                    <b>Time:</b> {u['updated_at']}
+                    """
+                    folium.Marker(
+                        location=[u["latitude"], u["longitude"]],
+                        popup=folium.Popup(popup_html, max_width=250),
+                        tooltip=f"📍 {u['user_id']}",
+                        icon=folium.Icon(color=u["color"], icon="info-sign"),
+                    ).add_to(m)
+
+                st_folium(m, width="100%", height=450, returned_objects=[])
+
+                # Table displaying live coordinates and spatial metrics
                 st.markdown("**Active Team Members**")
+                df_active_display = pd.DataFrame(active_users)
                 st.dataframe(
-                    df_active[["user_id", "latitude", "longitude", "updated_at"]],
+                    df_active_display[
+                        ["user_id", "latitude", "longitude", "altitude_m", "accuracy_m", "updated_at"]
+                    ],
                     use_container_width=True,
                     hide_index=True,
+                    column_config={
+                        "user_id": "User ID",
+                        "latitude": "Latitude",
+                        "longitude": "Longitude",
+                        "altitude_m": "Altitude (m)",
+                        "accuracy_m": "Accuracy (m)",
+                        "updated_at": "Last Fix Time",
+                    },
                 )
             else:
                 st.info("No active team members sharing GPS coordinates in this room.")
 
+        # --- Right Column: Chat System ---
         with col_chat:
-            st.subheader("💬 Temporary Room Chat")
+            st.subheader("💬 Room Chat")
 
             with st.form("send_chat_form", clear_on_submit=True):
                 chat_msg = st.text_input("Message:")
                 btn_send = st.form_submit_button("Send", use_container_width=True)
 
-                if btn_send and chat_msg:
-                    room_data["chat_history"].append({
-                        "room_id": current_room,
-                        "user_id": user_id,
-                        "message": chat_msg,
-                        "sent_at": current_time_str,
+                if btn_send and chat_msg.strip():
+                    room_data["unified_log"].append({
+                        "Timestamp": current_time_str,
+                        "Room_ID": current_room,
+                        "User_ID": user_id,
+                        "Event_Type": "CHAT_MESSAGE",
+                        "Latitude": None,
+                        "Longitude": None,
+                        "Altitude_m": None,
+                        "Accuracy_m": None,
+                        "Chat_Message": chat_msg.strip(),
                     })
                     st.rerun()
 
             st.markdown("---")
-            if room_data["chat_history"]:
-                chat_container = st.container(height=250)
+            # Extract chat messages from unified log
+            chat_events = [
+                log for log in room_data["unified_log"] if log["Event_Type"] == "CHAT_MESSAGE"
+            ]
+
+            if chat_events:
+                chat_container = st.container(height=300)
                 with chat_container:
-                    for msg in reversed(room_data["chat_history"]):
-                        st.markdown(f"**{msg['user_id']}** ({msg['sent_at'].split(' ')[1]}): {msg['message']}")
+                    for msg in reversed(chat_events):
+                        time_only = msg["Timestamp"].split(" ")[1]
+                        st.markdown(f"**{msg['User_ID']}** ({time_only}): {msg['Chat_Message']}")
             else:
-                st.caption("No chat messages sent yet.")
+                st.caption("No chat messages sent in this room yet.")
 
+        # --- Export Section: Unified Log (GPS Tracks + Chat Log Combined) ---
         st.markdown("---")
-        st.subheader("💾 Export & Download Session Data")
-        st.caption("Download your location track logs and room chats before closing your browser or leaving the room.")
+        st.subheader("💾 Unified Room History Export")
+        st.caption("Download the consolidated spatial tracking log and chat message transcript combined into a single chronological CSV file.")
 
-        down_col1, down_col2 = st.columns(2)
+        if room_data["unified_log"]:
+            df_unified = pd.DataFrame(room_data["unified_log"])
+            csv_unified = df_unified.to_csv(index=False).encode("utf-8")
 
-        with down_col1:
-            if room_data["location_history"]:
-                df_loc_export = pd.DataFrame(room_data["location_history"])
-                csv_locs = df_loc_export.to_csv(index=False).encode("utf-8")
-
-                st.download_button(
-                    label="📥 Download GPS Track Log (.csv)",
-                    data=csv_locs,
-                    file_name=f"GPS_Track_{current_room}_{user_id}.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
-            else:
-                st.info("No GPS tracks recorded yet to download.")
-
-        with down_col2:
-            if room_data["chat_history"]:
-                df_chat_export = pd.DataFrame(room_data["chat_history"])
-                csv_chats = df_chat_export.to_csv(index=False).encode("utf-8")
-
-                st.download_button(
-                    label="📥 Download Room Chat Log (.csv)",
-                    data=csv_chats,
-                    file_name=f"Chat_Log_{current_room}.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
-            else:
-                st.info("No chat logs recorded yet to download.")
+            st.download_button(
+                label="📥 Download Unified Track & Chat Log (.csv)",
+                data=csv_unified,
+                file_name=f"Unified_Room_Log_{current_room}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        else:
+            st.info("No room events recorded yet to download.")
