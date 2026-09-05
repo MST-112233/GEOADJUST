@@ -1,7 +1,7 @@
 streamlit
 pandas
 openpyxl
-requests
-supabase
-streamlit-js-eval
 streamlit-autorefresh
+streamlit-js-eval
+folium
+streamlit-folium
