@@ -3,6 +3,8 @@ import os
 import pandas as pd
 import streamlit as st
 import folium
+import datetime
+import pytz
 from streamlit_folium import st_folium
 from streamlit_autorefresh import st_autorefresh
 from streamlit_js_eval import get_geolocation
@@ -43,7 +45,6 @@ st.markdown(
 )
 
 # --- GLOBAL CROSS-DEVICE MEMORY REGISTRY ---
-# This dictionary is shared across ALL devices/browsers connected to the app server instance.
 @st.cache_resource
 def get_global_room_registry():
     return {}
@@ -51,6 +52,11 @@ def get_global_room_registry():
 GLOBAL_ROOMS_REGISTRY = get_global_room_registry()
 
 COLOR_PALETTE = ["red", "blue", "green", "purple", "orange", "darkred", "cadetblue", "darkpurple", "pink"]
+
+# Helper function for GMT+8 Timestamp
+def get_gmt8_time():
+    tz = pytz.timezone("Asia/Kuala_Lumpur")  # GMT+8
+    return datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
 
 # --- 2. Main Navigation Tabs ---
 tab1, tab2, tab3 = st.tabs([
@@ -415,6 +421,7 @@ with tab3:
             "room_pass": "",
             "username": "",
             "role": "",
+            "time_in": "",
         }
 
     session = st.session_state["user_room_session"]
@@ -447,7 +454,7 @@ with tab3:
                 )
 
                 submit_login = st.form_submit_button(
-                    "🚀 Enter Room", use_container_width=True, type="primary"
+                    "🚀 Enter Room / Rejoin Room", use_container_width=True, type="primary"
                 )
 
                 if submit_login:
@@ -455,6 +462,7 @@ with tab3:
                         st.error("Please fill in Username, Room ID, and Password.")
                     else:
                         room_key = input_room.strip()
+                        user_clean = input_user.strip()
 
                         # Check or create room in global server memory
                         if room_key in GLOBAL_ROOMS_REGISTRY:
@@ -465,23 +473,48 @@ with tab3:
                         else:
                             GLOBAL_ROOMS_REGISTRY[room_key] = {
                                 "password": input_pass,
-                                "locations": {},        # { user_id: {lat, lon, alt, acc, updated_at, color} }
+                                "locations": {},        # { user_id: {lat, lon, alt, acc, updated_at, color, time_in, time_out, is_online, signal_status} }
                                 "unified_log": [],      # combined tracking & chat logs
                                 "user_colors": {},
                             }
 
-                        # Assign a persistent unique marker color to the user
                         room_data = GLOBAL_ROOMS_REGISTRY[room_key]
-                        user_clean = input_user.strip()
+
+                        # Assign persistent marker color
                         if user_clean not in room_data["user_colors"]:
                             color_idx = len(room_data["user_colors"]) % len(COLOR_PALETTE)
                             room_data["user_colors"][user_clean] = COLOR_PALETTE[color_idx]
+
+                        time_now_gmt8 = get_gmt8_time()
+
+                        # Handle Rejoin feature (Feature 4)
+                        if user_clean in room_data["locations"]:
+                            time_in_val = room_data["locations"][user_clean].get("time_in", time_now_gmt8)
+                            room_data["locations"][user_clean]["is_online"] = True
+                            room_data["locations"][user_clean]["time_out"] = ""
+                        else:
+                            time_in_val = time_now_gmt8
 
                         session["authenticated"] = True
                         session["username"] = user_clean
                         session["room_id"] = room_key
                         session["room_pass"] = input_pass
                         session["role"] = input_role
+                        session["time_in"] = time_in_val
+
+                        # Record JOIN / REJOIN Event
+                        room_data["unified_log"].append({
+                            "Timestamp (GMT+8)": time_now_gmt8,
+                            "Room_ID": room_key,
+                            "User_ID": user_clean,
+                            "Event_Type": "USER_JOIN",
+                            "Latitude": None,
+                            "Longitude": None,
+                            "Altitude_m": None,
+                            "Accuracy_m": None,
+                            "Chat_Message": f"{user_clean} joined the room.",
+                        })
+
                         st.rerun()
 
             st.warning(
@@ -505,21 +538,47 @@ with tab3:
         with head_col1:
             st.subheader(f"📍 Room: `{current_room}`")
             st.caption(
-                f"Logged in as **{user_id}** ({'Control Center Admin' if is_admin else 'Field Surveyor'})"
+                f"Logged in as **{user_id}** ({'Control Center Admin' if is_admin else 'Field Surveyor'}) | Time Zone: **GMT+8**"
             )
         with head_col2:
             if st.button("🚪 Leave Room", use_container_width=True):
+                time_now_gmt8 = get_gmt8_time()
+                
+                # Update status to Offline and log time out
                 if user_id in room_data["locations"]:
-                    del room_data["locations"][user_id]
+                    room_data["locations"][user_id]["is_online"] = False
+                    room_data["locations"][user_id]["time_out"] = time_now_gmt8
+
+                # Record Leave Event
+                room_data["unified_log"].append({
+                    "Timestamp (GMT+8)": time_now_gmt8,
+                    "Room_ID": current_room,
+                    "User_ID": user_id,
+                    "Event_Type": "USER_LEFT",
+                    "Latitude": None,
+                    "Longitude": None,
+                    "Altitude_m": None,
+                    "Accuracy_m": None,
+                    "Chat_Message": f"{user_id} left the room.",
+                })
+
+                # Feature 1: Auto clear room memory when all users leave
+                active_online_users = [u for u in room_data["locations"].values() if u.get("is_online", False)]
+                if len(active_online_users) == 0:
+                    del GLOBAL_ROOMS_REGISTRY[current_room]
+
                 session["authenticated"] = False
                 st.rerun()
 
-        # Auto-refresh UI and poll browser GPS every 10 seconds
+        # Feature 5: Pre-leave record download reminder box
+        st.info("💡 **Reminder**: Make sure to download your tracking and chat logs below before leaving or closing the room!")
+
+        # Feature 2 & 6: Auto-refresh GPS and page UI without map flickering
         st_autorefresh(interval=10000, key="tracking_autorefresh")
 
-        # Capture Geolocation with Altitude & Accuracy
+        # Capture Browser Geolocation
         loc = get_geolocation()
-        current_time_str = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+        current_time_str = get_gmt8_time()
 
         if loc and "coords" in loc:
             coords = loc["coords"]
@@ -530,6 +589,10 @@ with tab3:
 
             user_color = room_data["user_colors"].get(user_id, "blue")
 
+            # Determine signal strength indicators (Feature 7)
+            gps_sig = "Good (High Precision)" if acc <= 15 else ("Moderate" if acc <= 50 else "Weak")
+            network_sig = "Online (Active)"
+
             # Update live marker state
             room_data["locations"][user_id] = {
                 "user_id": user_id,
@@ -539,11 +602,16 @@ with tab3:
                 "accuracy_m": acc,
                 "updated_at": current_time_str,
                 "color": user_color,
+                "time_in": session.get("time_in", current_time_str),
+                "time_out": "",
+                "is_online": True,
+                "gps_signal": gps_sig,
+                "network_signal": network_sig,
             }
 
-            # Record to unified event log
+            # Record GPS position fix in log
             room_data["unified_log"].append({
-                "Timestamp": current_time_str,
+                "Timestamp (GMT+8)": current_time_str,
                 "Room_ID": current_room,
                 "User_ID": user_id,
                 "Event_Type": "GPS_UPDATE",
@@ -555,64 +623,83 @@ with tab3:
             })
 
             st.sidebar.success(
-                f"📡 GPS Updated:\n* Lat/Lon: `{lat:.5f}, {lon:.5f}`\n* Alt: `{alt:.2f} m`\n* Acc: `±{acc:.2f} m`"
+                f"📡 GPS Updated (GMT+8):\n* Lat/Lon: `{lat:.5f}, {lon:.5f}`\n* Alt: `{alt:.2f} m`\n* Acc: `±{acc:.2f} m`"
             )
         else:
-            st.sidebar.warning("⏳ Awaiting Browser GPS Permissions...")
+            st.sidebar.warning("⏳ Awaiting Browser GPS Permissions... Make sure Location/GPS is turned ON in your device settings.")
 
         # --- Main Layout Split ---
         col_map, col_chat = st.columns([2, 1])
 
         # --- Left Column: OpenStreetMap with Custom User Pins ---
         with col_map:
-            st.subheader("🗺️ Live OpenStreetMap")
+            st.subheader("MAP Live OpenStreetMap")
 
-            active_users = list(room_data["locations"].values())
-            if active_users:
-                # Center map on the first active user's location
-                avg_lat = active_users[0]["latitude"]
-                avg_lon = active_users[0]["longitude"]
+            all_users = list(room_data["locations"].values())
+            online_users = [u for u in all_users if u.get("is_online", True)]
+
+            if online_users:
+                # Center map on the latest user's updated position
+                last_active_user = online_users[-1]
+                avg_lat = last_active_user["latitude"]
+                avg_lon = last_active_user["longitude"]
 
                 m = folium.Map(location=[avg_lat, avg_lon], zoom_start=16, tiles="OpenStreetMap")
 
-                for u in active_users:
+                for u in online_users:
                     popup_html = f"""
                     <b>User:</b> {u['user_id']}<br>
+                    <b>Status:</b> 🟢 Online<br>
                     <b>Lat:</b> {u['latitude']:.5f}<br>
                     <b>Lon:</b> {u['longitude']:.5f}<br>
                     <b>Alt:</b> {u['altitude_m']:.2f} m<br>
                     <b>Acc:</b> ±{u['accuracy_m']:.2f} m<br>
-                    <b>Time:</b> {u['updated_at']}
+                    <b>GPS Signal:</b> {u.get('gps_signal', 'N/A')}<br>
+                    <b>Last Fix:</b> {u['updated_at']} (GMT+8)
                     """
                     folium.Marker(
                         location=[u["latitude"], u["longitude"]],
                         popup=folium.Popup(popup_html, max_width=250),
-                        tooltip=f"📍 {u['user_id']}",
+                        tooltip=f"📍 {u['user_id']} (Online)",
                         icon=folium.Icon(color=u["color"], icon="info-sign"),
                     ).add_to(m)
 
-                st_folium(m, width="100%", height=450, returned_objects=[])
+                # Feature 6: render folium map smoothly using session key state
+                st_folium(m, width="100%", height=450, returned_objects=[], key=f"map_{current_room}")
 
-                # Table displaying live coordinates and spatial metrics
-                st.markdown("**Active Team Members**")
-                df_active_display = pd.DataFrame(active_users)
+            else:
+                st.info("No active team members sharing live GPS coordinates in this room.")
+
+            # Feature 7: Comprehensive Member Status Panel
+            st.markdown("**👥 Team Member Status Bar**")
+            if all_users:
+                df_active_display = pd.DataFrame(all_users)
+                df_active_display["Status"] = df_active_display["is_online"].apply(lambda x: "🟢 Online" if x else "🔴 Offline")
+                
+                cols_to_show = ["user_id", "Status", "time_in", "time_out", "latitude", "longitude", "accuracy_m", "gps_signal", "network_signal", "updated_at"]
+                
+                # Fallback for missing fields
+                for c in cols_to_show:
+                    if c not in df_active_display.columns:
+                        df_active_display[c] = "-"
+
                 st.dataframe(
-                    df_active_display[
-                        ["user_id", "latitude", "longitude", "altitude_m", "accuracy_m", "updated_at"]
-                    ],
+                    df_active_display[cols_to_show],
                     use_container_width=True,
                     hide_index=True,
                     column_config={
                         "user_id": "User ID",
+                        "Status": "Presence Status",
+                        "time_in": "Time In (GMT+8)",
+                        "time_out": "Time Out (GMT+8)",
                         "latitude": "Latitude",
                         "longitude": "Longitude",
-                        "altitude_m": "Altitude (m)",
                         "accuracy_m": "Accuracy (m)",
-                        "updated_at": "Last Fix Time",
+                        "gps_signal": "GPS Signal",
+                        "network_signal": "Network/Data",
+                        "updated_at": "Last Fix (GMT+8)",
                     },
                 )
-            else:
-                st.info("No active team members sharing GPS coordinates in this room.")
 
         # --- Right Column: Chat System ---
         with col_chat:
@@ -624,7 +711,7 @@ with tab3:
 
                 if btn_send and chat_msg.strip():
                     room_data["unified_log"].append({
-                        "Timestamp": current_time_str,
+                        "Timestamp (GMT+8)": current_time_str,
                         "Room_ID": current_room,
                         "User_ID": user_id,
                         "Event_Type": "CHAT_MESSAGE",
@@ -637,7 +724,7 @@ with tab3:
                     st.rerun()
 
             st.markdown("---")
-            # Extract chat messages from unified log
+            # Filter chat messages
             chat_events = [
                 log for log in room_data["unified_log"] if log["Event_Type"] == "CHAT_MESSAGE"
             ]
@@ -646,7 +733,7 @@ with tab3:
                 chat_container = st.container(height=300)
                 with chat_container:
                     for msg in reversed(chat_events):
-                        time_only = msg["Timestamp"].split(" ")[1]
+                        time_only = msg["Timestamp (GMT+8)"].split(" ")[1]
                         st.markdown(f"**{msg['User_ID']}** ({time_only}): {msg['Chat_Message']}")
             else:
                 st.caption("No chat messages sent in this room yet.")
