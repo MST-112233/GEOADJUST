@@ -59,6 +59,7 @@ COLOR_PALETTE = ["red", "blue", "green", "purple", "orange", "darkred", "cadetbl
 TIMEZONE = ZoneInfo("Asia/Kuala_Lumpur")  # GMT+8 (matches Johor Bahru / Singapore)
 ONLINE_THRESHOLD_SEC = 20      # no GPS update within this window -> flagged Offline
 STALE_ROOM_MINUTES = 60        # room auto-clears if nobody has been seen for this long
+MAP_REDRAW_EVERY_N_TICKS = 3   # only rebuild the visible map every Nth autorefresh tick (~30s)
 
 
 # =========================================================
@@ -511,6 +512,8 @@ with tab3:
         st.session_state["map_center"] = None
     if "map_zoom" not in st.session_state:
         st.session_state["map_zoom"] = 16
+    if "_map_obj" not in st.session_state:
+        st.session_state["_map_obj"] = None
 
     session = st.session_state["user_room_session"]
 
@@ -597,6 +600,7 @@ with tab3:
                         session["room_pass"] = input_pass
                         session["role"] = input_role
                         st.session_state["map_center"] = None
+                        st.session_state["_map_obj"] = None
                         st.rerun()
 
             st.warning(
@@ -715,6 +719,7 @@ with tab3:
                     session["authenticated"] = False
                     st.session_state["show_leave_confirm"] = False
                     st.session_state["map_center"] = None
+                    st.session_state["_map_obj"] = None
                     st.rerun()
             with cancel_col:
                 if st.button("❌ Cancel", use_container_width=True):
@@ -753,30 +758,47 @@ with tab3:
                     first_loc = next(iter(active_locs.values()))
                     st.session_state["map_center"] = [first_loc["latitude"], first_loc["longitude"]]
 
-                m = folium.Map(
-                    location=st.session_state["map_center"],
-                    zoom_start=st.session_state["map_zoom"],
-                    tiles="OpenStreetMap",
+                # --- Throttle the actual map REBUILD, independent of GPS polling ---
+                # GPS is still written to room_data every 10s (see above), so positions
+                # stay fresh. But rebuilding the Leaflet map forces the browser iframe to
+                # reload its tiles, which is what causes the visible gray "blink". By only
+                # rebuilding every MAP_REDRAW_EVERY_N_TICKS ticks (and reusing the exact
+                # same map object on the ticks in between), the iframe's content is
+                # byte-identical on skipped ticks, so the browser doesn't reload it.
+                should_rebuild_map = (
+                    st.session_state.get("_map_obj") is None
+                    or refresh_count % MAP_REDRAW_EVERY_N_TICKS == 0
                 )
 
-                for uid, u in active_locs.items():
-                    online = (now_ts - u["last_seen"]) <= timedelta(seconds=ONLINE_THRESHOLD_SEC)
-                    marker_color = u["color"] if online else "gray"
-                    popup_html = f"""
-                    <b>User:</b> {u['user_id']}<br>
-                    <b>Status:</b> {'Online' if online else 'Offline'}<br>
-                    <b>Lat:</b> {u['latitude']:.5f}<br>
-                    <b>Lon:</b> {u['longitude']:.5f}<br>
-                    <b>Alt:</b> {u['altitude_m']:.2f} m<br>
-                    <b>Acc:</b> ±{u['accuracy_m']:.2f} m<br>
-                    <b>Time:</b> {u['updated_at']}
-                    """
-                    folium.Marker(
-                        location=[u["latitude"], u["longitude"]],
-                        popup=folium.Popup(popup_html, max_width=250),
-                        tooltip=f"{'📍' if online else '⚪'} {u['user_id']}",
-                        icon=folium.Icon(color=marker_color, icon="info-sign"),
-                    ).add_to(m)
+                if should_rebuild_map:
+                    m = folium.Map(
+                        location=st.session_state["map_center"],
+                        zoom_start=st.session_state["map_zoom"],
+                        tiles="OpenStreetMap",
+                    )
+
+                    for uid, u in active_locs.items():
+                        online = (now_ts - u["last_seen"]) <= timedelta(seconds=ONLINE_THRESHOLD_SEC)
+                        marker_color = u["color"] if online else "gray"
+                        popup_html = f"""
+                        <b>User:</b> {u['user_id']}<br>
+                        <b>Status:</b> {'Online' if online else 'Offline'}<br>
+                        <b>Lat:</b> {u['latitude']:.5f}<br>
+                        <b>Lon:</b> {u['longitude']:.5f}<br>
+                        <b>Alt:</b> {u['altitude_m']:.2f} m<br>
+                        <b>Acc:</b> ±{u['accuracy_m']:.2f} m<br>
+                        <b>Time:</b> {u['updated_at']}
+                        """
+                        folium.Marker(
+                            location=[u["latitude"], u["longitude"]],
+                            popup=folium.Popup(popup_html, max_width=250),
+                            tooltip=f"{'📍' if online else '⚪'} {u['user_id']}",
+                            icon=folium.Icon(color=marker_color, icon="info-sign"),
+                        ).add_to(m)
+
+                    st.session_state["_map_obj"] = m
+                else:
+                    m = st.session_state["_map_obj"]
 
                 # Keep the same component key + capture returned center/zoom so the
                 # map preserves the user's current pan/zoom across auto-refreshes.
@@ -795,6 +817,10 @@ with tab3:
                     if map_state.get("zoom"):
                         st.session_state["map_zoom"] = map_state["zoom"]
 
+                st.caption(
+                    f"🔄 Map refreshes every ~{MAP_REDRAW_EVERY_N_TICKS * 10}s · "
+                    f"GPS positions update every 10s in the background."
+                )
                 st.markdown("**Active Team Members**")
                 st.dataframe(
                     build_members_table(room_data),
