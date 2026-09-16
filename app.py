@@ -917,19 +917,26 @@ with tab3:
                     )
 
                 if st.session_state.get("_map_base_room") != current_room:
-                    # First time this room's map is shown in this browser session:
-                    # render the persistent Leaflet map ONCE.
-                    base_html = build_base_map_html(
+                    # Build the persistent map's HTML ONCE per room and cache the
+                    # string itself (not just a flag) — we need to keep passing this
+                    # exact same string on every future rerun.
+                    st.session_state["_map_base_html"] = build_base_map_html(
                         st.session_state["map_center"], st.session_state["map_zoom"], current_room
                     )
-                    components.html(base_html, height=450)
                     st.session_state["_map_base_room"] = current_room
-                else:
-                    # Every other tick: an invisible (height=0) snippet that just moves
-                    # the existing markers — the map iframe above is never re-rendered,
-                    # so it never blinks.
-                    updater_html = build_updater_html(current_room, users_payload)
-                    components.html(updater_html, height=0)
+
+                # Render the map on EVERY rerun (so it stays present on screen), but
+                # always with the identical cached HTML string. Since the content
+                # doesn't change, the browser has nothing new to load -> no reload,
+                # no blink. Actual movement is delivered separately below.
+                components.html(st.session_state["_map_base_html"], height=450)
+
+                # Tiny, invisible (height=0) component sent on every tick — it finds
+                # the map iframe above and moves its markers via postMessage. Because
+                # this component is invisible, its own content changing every tick
+                # (fresh coordinates) causes no visible flicker.
+                updater_html = build_updater_html(current_room, users_payload)
+                components.html(updater_html, height=0)
 
                 st.markdown("**Active Team Members**")
                 st.dataframe(
