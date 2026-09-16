@@ -1,12 +1,12 @@
 import io
 import os
+import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
-import folium
-from streamlit_folium import st_folium
+import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 from streamlit_js_eval import get_geolocation, streamlit_js_eval
 
@@ -53,13 +53,16 @@ def get_global_room_registry():
 
 GLOBAL_ROOMS_REGISTRY = get_global_room_registry()
 
-COLOR_PALETTE = ["red", "blue", "green", "purple", "orange", "darkred", "cadetblue", "darkpurple", "pink"]
+COLOR_PALETTE = ["blue", "red", "green", "orange", "violet", "gold", "black"]
 
 # --- Real-Time Tracking Settings ---
 TIMEZONE = ZoneInfo("Asia/Kuala_Lumpur")  # GMT+8 (matches Johor Bahru / Singapore)
 ONLINE_THRESHOLD_SEC = 20      # no GPS update within this window -> flagged Offline
 STALE_ROOM_MINUTES = 60        # room auto-clears if nobody has been seen for this long
-MAP_REDRAW_EVERY_N_TICKS = 3   # only rebuild the visible map every Nth autorefresh tick (~30s)
+MARKER_ICON_BASE = "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-{color}.png"
+MARKER_SHADOW = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png"
+
+
 
 
 # =========================================================
@@ -71,6 +74,11 @@ def now_local():
 
 def fmt_time(dt):
     return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else "-"
+
+
+def today_str():
+    """Today's date (GMT+8) — used to stamp output filenames."""
+    return now_local().strftime("%Y-%m-%d")
 
 
 def gps_quality_label(acc):
@@ -136,10 +144,111 @@ def build_members_table(room_data):
                 "Altitude (m)": loc["altitude_m"] if loc else None,
                 "GPS Signal": gps_quality_label(loc["accuracy_m"]) if loc else "🔴 No Fix",
                 "Last Update": loc["updated_at"] if loc else "-",
-                "Time In": minfo["time_in"].strftime("%H:%M:%S") if minfo.get("time_in") else "-",
+                "Time In": minfo["time_in"].strftime("%Y-%m-%d %H:%M:%S") if minfo.get("time_in") else "-",
             }
         )
     return pd.DataFrame(rows)
+
+
+def marker_icon_urls(color):
+    return MARKER_ICON_BASE.format(color=color), MARKER_SHADOW
+
+
+def build_base_map_html(center, zoom, room_id):
+    """
+    Rendered ONCE per room session. Sets up a persistent Leaflet map that is
+    never rebuilt afterwards — only its markers move (see build_updater_html) —
+    which is what stops the map area from reloading/blinking on every refresh.
+    """
+    return f"""
+    <div id="geoadjust-map-anchor" data-room="{room_id}" style="height:450px;width:100%;">
+      <div id="geoadjust-leaflet-map" style="height:100%;width:100%;"></div>
+    </div>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+    <script>
+      var geoMap = L.map('geoadjust-leaflet-map').setView([{center[0]}, {center[1]}], {zoom});
+      L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+          maxZoom: 19,
+          attribution: '&copy; OpenStreetMap contributors'
+      }}).addTo(geoMap);
+
+      window.geoadjustMarkers = {{}};
+
+      // Move / create / remove markers WITHOUT touching the map or tile layer.
+      window.updateMarkers = function(users) {{
+          var seen = {{}};
+          users.forEach(function(u) {{
+              seen[u.id] = true;
+              var latlng = [u.lat, u.lon];
+              var icon = L.icon({{
+                  iconUrl: u.icon_url,
+                  shadowUrl: "{MARKER_SHADOW}",
+                  iconSize: [25, 41],
+                  iconAnchor: [12, 41],
+                  popupAnchor: [1, -34],
+                  shadowSize: [41, 41],
+              }});
+              if (window.geoadjustMarkers[u.id]) {{
+                  window.geoadjustMarkers[u.id].setLatLng(latlng);
+                  window.geoadjustMarkers[u.id].setIcon(icon);
+                  window.geoadjustMarkers[u.id].setPopupContent(u.popup);
+                  window.geoadjustMarkers[u.id].setTooltipContent(u.tooltip);
+              }} else {{
+                  window.geoadjustMarkers[u.id] = L.marker(latlng, {{icon: icon}})
+                      .addTo(geoMap)
+                      .bindPopup(u.popup)
+                      .bindTooltip(u.tooltip);
+              }}
+          }});
+          // Drop markers for members who are no longer in the active list
+          Object.keys(window.geoadjustMarkers).forEach(function(id) {{
+              if (!seen[id]) {{
+                  geoMap.removeLayer(window.geoadjustMarkers[id]);
+                  delete window.geoadjustMarkers[id];
+              }}
+          }});
+      }};
+
+      window.addEventListener('message', function(event) {{
+          if (event.data && event.data.type === 'geoadjust_update' && event.data.room === "{room_id}") {{
+              window.updateMarkers(event.data.users);
+          }}
+      }});
+    </script>
+    """
+
+
+def build_updater_html(room_id, users_payload):
+    """
+    A tiny, INVISIBLE (height=0) component re-run on every autorefresh tick.
+    It reaches into the already-mounted map iframe (found via the data-room
+    marker set in build_base_map_html) and posts fresh marker positions into
+    it — the map iframe itself is never recreated, so it never blinks.
+    """
+    payload_json = json.dumps(users_payload)
+    return f"""
+    <script>
+    (function() {{
+        var payload = {payload_json};
+        try {{
+            var frames = window.parent.document.querySelectorAll('iframe');
+            for (var i = 0; i < frames.length; i++) {{
+                try {{
+                    var doc = frames[i].contentDocument || frames[i].contentWindow.document;
+                    var anchor = doc.getElementById('geoadjust-map-anchor');
+                    if (anchor && anchor.getAttribute('data-room') === "{room_id}") {{
+                        frames[i].contentWindow.postMessage(
+                            {{type: 'geoadjust_update', room: "{room_id}", users: payload}}, '*'
+                        );
+                        break;
+                    }}
+                }} catch (inner) {{ /* different iframe, ignore and keep looking */ }}
+            }}
+        }} catch (e) {{ /* map not mounted yet — next tick will retry */ }}
+    }})();
+    </script>
+    """
 
 
 # --- 2. Main Navigation Tabs ---
@@ -512,8 +621,8 @@ with tab3:
         st.session_state["map_center"] = None
     if "map_zoom" not in st.session_state:
         st.session_state["map_zoom"] = 16
-    if "_map_obj" not in st.session_state:
-        st.session_state["_map_obj"] = None
+    if "_map_base_room" not in st.session_state:
+        st.session_state["_map_base_room"] = None
 
     session = st.session_state["user_room_session"]
 
@@ -565,9 +674,24 @@ with tab3:
                                 st.error("Incorrect Password for this active room!")
                                 st.stop()
 
-                            if user_clean in room_data["members"]:
-                                # Rejoin after an inadvertent disconnect — same identity restored
-                                room_data["members"][user_clean]["time_out"] = None
+                            existing_member = room_data["members"].get(user_clean)
+                            if existing_member and existing_member.get("time_out") is None:
+                                hb = existing_member.get("last_heartbeat")
+                                currently_active = bool(
+                                    hb and (now_local() - hb) <= timedelta(seconds=ONLINE_THRESHOLD_SEC)
+                                )
+                                if currently_active:
+                                    st.error(
+                                        f"⚠️ The username '{user_clean}' is already active in this room right now. "
+                                        "Please choose a different username, or wait a moment and try again if that was you."
+                                    )
+                                    st.stop()
+                                # Existing member, but inactive/stale -> treat as a rejoin
+                                existing_member["time_out"] = None
+                                log_event(room_data, room_key, user_clean, "REJOIN")
+                            elif existing_member:
+                                # Member had explicitly left before -> welcome them back fresh
+                                existing_member["time_out"] = None
                                 log_event(room_data, room_key, user_clean, "REJOIN")
                             else:
                                 color_idx = len(room_data["members"]) % len(COLOR_PALETTE)
@@ -576,6 +700,7 @@ with tab3:
                                     "color": COLOR_PALETTE[color_idx],
                                     "time_in": now_local(),
                                     "time_out": None,
+                                    "last_heartbeat": now_local(),
                                 }
                                 log_event(room_data, room_key, user_clean, "JOIN")
                         else:
@@ -587,6 +712,7 @@ with tab3:
                                         "color": COLOR_PALETTE[0],
                                         "time_in": now_local(),
                                         "time_out": None,
+                                        "last_heartbeat": now_local(),
                                     }
                                 },
                                 "locations": {},
@@ -600,7 +726,7 @@ with tab3:
                         session["room_pass"] = input_pass
                         session["role"] = input_role
                         st.session_state["map_center"] = None
-                        st.session_state["_map_obj"] = None
+                        st.session_state["_map_base_room"] = None
                         st.rerun()
 
             st.warning(
@@ -640,6 +766,12 @@ with tab3:
 
         now_ts = now_local()
         current_time_str = fmt_time(now_ts)
+        current_date_str = now_ts.strftime("%Y-%m-%d")
+
+        # Heartbeat: proves this browser tab is still alive/running the app,
+        # independent of whether GPS succeeds — used to detect username collisions
+        # and to tell a genuine rejoin apart from someone else still active.
+        room_data["members"][user_id]["last_heartbeat"] = now_ts
 
         current_gps_quality = "🔴 No Fix"
         if loc and "coords" in loc:
@@ -699,7 +831,7 @@ with tab3:
                     st.download_button(
                         "📥 Download Log Now",
                         data=df_confirm.to_csv(index=False).encode("utf-8"),
-                        file_name=f"Unified_Room_Log_{current_room}.csv",
+                        file_name=f"Unified_Room_Log_{current_room}_{today_str()}.csv",
                         mime="text/csv",
                         use_container_width=True,
                         key="confirm_leave_download",
@@ -719,7 +851,7 @@ with tab3:
                     session["authenticated"] = False
                     st.session_state["show_leave_confirm"] = False
                     st.session_state["map_center"] = None
-                    st.session_state["_map_obj"] = None
+                    st.session_state["_map_base_room"] = None
                     st.rerun()
             with cancel_col:
                 if st.button("❌ Cancel", use_container_width=True):
@@ -729,14 +861,15 @@ with tab3:
 
         # --- Status Bar ---
         st.markdown("---")
-        s1, s2, s3, s4 = st.columns(4)
+        s1, s2, s3, s4, s5 = st.columns(5)
         s1.metric("Your Status", "🟢 Online")
-        s2.metric("Time In (GMT+8)", room_data["members"][user_id]["time_in"].strftime("%H:%M:%S"))
+        s2.metric("Date (GMT+8)", current_date_str)
+        s3.metric("Time In", room_data["members"][user_id]["time_in"].strftime("%H:%M:%S"))
         net_label = "🟢 Connected" if net_online else "🔴 Disconnected"
         if net_type and net_type != "unknown":
             net_label += f" ({net_type})"
-        s3.metric("Network", net_label)
-        s4.metric("GPS Signal", current_gps_quality)
+        s4.metric("Network", net_label)
+        s5.metric("GPS Signal", current_gps_quality)
         st.caption(f"🕒 Current Time (GMT+8): {current_time_str}")
 
         # --- Main Layout Split ---
@@ -752,75 +885,52 @@ with tab3:
             }
 
             if active_locs:
-                # Only set the initial center once per session -> prevents the map
-                # from re-centering (and visually "blinking"/jumping) every refresh.
+                # Only set the initial center once per session.
                 if st.session_state["map_center"] is None:
                     first_loc = next(iter(active_locs.values()))
                     st.session_state["map_center"] = [first_loc["latitude"], first_loc["longitude"]]
 
-                # --- Throttle the actual map REBUILD, independent of GPS polling ---
-                # GPS is still written to room_data every 10s (see above), so positions
-                # stay fresh. But rebuilding the Leaflet map forces the browser iframe to
-                # reload its tiles, which is what causes the visible gray "blink". By only
-                # rebuilding every MAP_REDRAW_EVERY_N_TICKS ticks (and reusing the exact
-                # same map object on the ticks in between), the iframe's content is
-                # byte-identical on skipped ticks, so the browser doesn't reload it.
-                should_rebuild_map = (
-                    st.session_state.get("_map_obj") is None
-                    or refresh_count % MAP_REDRAW_EVERY_N_TICKS == 0
-                )
-
-                if should_rebuild_map:
-                    m = folium.Map(
-                        location=st.session_state["map_center"],
-                        zoom_start=st.session_state["map_zoom"],
-                        tiles="OpenStreetMap",
+                # Build the small payload of marker updates for this tick.
+                users_payload = []
+                for uid, u in active_locs.items():
+                    online = (now_ts - u["last_seen"]) <= timedelta(seconds=ONLINE_THRESHOLD_SEC)
+                    icon_color = u["color"] if online else "grey"
+                    icon_url, _ = marker_icon_urls(icon_color)
+                    popup_html = (
+                        f"<b>User:</b> {u['user_id']}<br>"
+                        f"<b>Status:</b> {'Online' if online else 'Offline'}<br>"
+                        f"<b>Lat:</b> {u['latitude']:.5f}<br>"
+                        f"<b>Lon:</b> {u['longitude']:.5f}<br>"
+                        f"<b>Alt:</b> {u['altitude_m']:.2f} m<br>"
+                        f"<b>Acc:</b> ±{u['accuracy_m']:.2f} m<br>"
+                        f"<b>Updated:</b> {u['updated_at']}"
+                    )
+                    users_payload.append(
+                        {
+                            "id": uid,
+                            "lat": u["latitude"],
+                            "lon": u["longitude"],
+                            "icon_url": icon_url,
+                            "popup": popup_html,
+                            "tooltip": f"{'📍' if online else '⚪'} {u['user_id']}",
+                        }
                     )
 
-                    for uid, u in active_locs.items():
-                        online = (now_ts - u["last_seen"]) <= timedelta(seconds=ONLINE_THRESHOLD_SEC)
-                        marker_color = u["color"] if online else "gray"
-                        popup_html = f"""
-                        <b>User:</b> {u['user_id']}<br>
-                        <b>Status:</b> {'Online' if online else 'Offline'}<br>
-                        <b>Lat:</b> {u['latitude']:.5f}<br>
-                        <b>Lon:</b> {u['longitude']:.5f}<br>
-                        <b>Alt:</b> {u['altitude_m']:.2f} m<br>
-                        <b>Acc:</b> ±{u['accuracy_m']:.2f} m<br>
-                        <b>Time:</b> {u['updated_at']}
-                        """
-                        folium.Marker(
-                            location=[u["latitude"], u["longitude"]],
-                            popup=folium.Popup(popup_html, max_width=250),
-                            tooltip=f"{'📍' if online else '⚪'} {u['user_id']}",
-                            icon=folium.Icon(color=marker_color, icon="info-sign"),
-                        ).add_to(m)
-
-                    st.session_state["_map_obj"] = m
+                if st.session_state.get("_map_base_room") != current_room:
+                    # First time this room's map is shown in this browser session:
+                    # render the persistent Leaflet map ONCE.
+                    base_html = build_base_map_html(
+                        st.session_state["map_center"], st.session_state["map_zoom"], current_room
+                    )
+                    components.html(base_html, height=450)
+                    st.session_state["_map_base_room"] = current_room
                 else:
-                    m = st.session_state["_map_obj"]
+                    # Every other tick: an invisible (height=0) snippet that just moves
+                    # the existing markers — the map iframe above is never re-rendered,
+                    # so it never blinks.
+                    updater_html = build_updater_html(current_room, users_payload)
+                    components.html(updater_html, height=0)
 
-                # Keep the same component key + capture returned center/zoom so the
-                # map preserves the user's current pan/zoom across auto-refreshes.
-                map_state = st_folium(
-                    m,
-                    key=f"live_map_{current_room}",
-                    width="100%",
-                    height=450,
-                    returned_objects=["center", "zoom"],
-                )
-                if map_state:
-                    if map_state.get("center"):
-                        st.session_state["map_center"] = [
-                            map_state["center"]["lat"], map_state["center"]["lng"]
-                        ]
-                    if map_state.get("zoom"):
-                        st.session_state["map_zoom"] = map_state["zoom"]
-
-                st.caption(
-                    f"🔄 Map refreshes every ~{MAP_REDRAW_EVERY_N_TICKS * 10}s · "
-                    f"GPS positions update every 10s in the background."
-                )
                 st.markdown("**Active Team Members**")
                 st.dataframe(
                     build_members_table(room_data),
@@ -871,7 +981,7 @@ with tab3:
             st.download_button(
                 label="📥 Download Unified Track & Chat Log (.csv)",
                 data=csv_unified,
-                file_name=f"Unified_Room_Log_{current_room}.csv",
+                file_name=f"Unified_Room_Log_{current_room}_{today_str()}.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
