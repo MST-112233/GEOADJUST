@@ -3,6 +3,7 @@ import os
 import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from math import radians, sin, cos, asin, sqrt
 
 import pandas as pd
 import streamlit as st
@@ -54,11 +55,16 @@ def get_global_room_registry():
 GLOBAL_ROOMS_REGISTRY = get_global_room_registry()
 
 COLOR_PALETTE = ["blue", "red", "green", "orange", "violet", "gold", "black"]
+COLOR_EMOJI = {
+    "blue": "🔵", "red": "🔴", "green": "🟢", "orange": "🟠",
+    "violet": "🟣", "gold": "🟡", "black": "⚫", "grey": "⚪",
+}
 
 # --- Real-Time Tracking Settings ---
 TIMEZONE = ZoneInfo("Asia/Kuala_Lumpur")  # GMT+8 (matches Johor Bahru / Singapore)
 ONLINE_THRESHOLD_SEC = 20      # no GPS update within this window -> flagged Offline
 STALE_ROOM_MINUTES = 60        # room auto-clears if nobody has been seen for this long
+MAX_TRACK_POINTS = 300         # cap stored trail points per user (~50 min at 10s/fix)
 MARKER_ICON_BASE = "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-{color}.png"
 MARKER_SHADOW = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png"
 
@@ -92,6 +98,16 @@ def gps_quality_label(acc):
     return "🔴 Weak"
 
 
+def haversine_m(lat1, lon1, lat2, lon2):
+    """Great-circle distance between two lat/lon points, in meters."""
+    R = 6371000
+    phi1, phi2 = radians(lat1), radians(lat2)
+    dphi = radians(lat2 - lat1)
+    dlambda = radians(lon2 - lon1)
+    a = sin(dphi / 2) ** 2 + cos(phi1) * cos(phi2) * sin(dlambda / 2) ** 2
+    return 2 * R * asin(sqrt(a))
+
+
 def is_room_stale(room_data):
     """A room is stale (abandoned) if nobody has been seen for STALE_ROOM_MINUTES."""
     last_seen_times = [
@@ -121,6 +137,7 @@ def log_event(room_data, room_key, user_id, event_type, extra=None):
         "Longitude": None,
         "Altitude_m": None,
         "Accuracy_m": None,
+        "Speed_kmh": None,
         "Chat_Message": "",
     }
     if extra:
@@ -135,19 +152,32 @@ def build_members_table(room_data):
             continue  # already left explicitly
         loc = room_data["locations"].get(uid)
         online = bool(loc and loc.get("last_seen") and (now_local() - loc["last_seen"]) <= timedelta(seconds=ONLINE_THRESHOLD_SEC))
+        legend = f"{COLOR_EMOJI.get(minfo.get('color'), '⚪')} {minfo.get('color', '-')}"
         rows.append(
             {
+                "Legend": legend,
                 "User ID": uid,
                 "Status": "🟢 Online" if online else "🟡 Offline",
                 "Latitude": loc["latitude"] if loc else None,
                 "Longitude": loc["longitude"] if loc else None,
                 "Altitude (m)": loc["altitude_m"] if loc else None,
+                "Speed (km/h)": loc.get("speed_kmh") if loc else None,
                 "GPS Signal": gps_quality_label(loc["accuracy_m"]) if loc else "🔴 No Fix",
                 "Last Update": loc["updated_at"] if loc else "-",
                 "Time In": minfo["time_in"].strftime("%Y-%m-%d %H:%M:%S") if minfo.get("time_in") else "-",
             }
         )
     return pd.DataFrame(rows)
+
+
+def build_log_dataframe(room_data, user_filter=None):
+    log = room_data.get("unified_log", [])
+    df = pd.DataFrame(log)
+    if df.empty:
+        return df
+    if user_filter:
+        df = df[df["User_ID"] == user_filter]
+    return df.sort_values("Timestamp", ascending=False).reset_index(drop=True)
 
 
 def marker_icon_urls(color):
@@ -174,8 +204,9 @@ def build_base_map_html(center, zoom, room_id):
       }}).addTo(geoMap);
 
       window.geoadjustMarkers = {{}};
+      window.geoadjustPaths = {{}};
 
-      // Move / create / remove markers WITHOUT touching the map or tile layer.
+      // Move / create / remove markers + path trails WITHOUT touching the map or tile layer.
       window.updateMarkers = function(users) {{
           var seen = {{}};
           users.forEach(function(u) {{
@@ -200,12 +231,32 @@ def build_base_map_html(center, zoom, room_id):
                       .bindPopup(u.popup)
                       .bindTooltip(u.tooltip);
               }}
+
+              // Path trail (only drawn when the caller sends 2+ points; an
+              // empty/short path means "path display is off" -> remove it).
+              if (u.path && u.path.length > 1) {{
+                  if (window.geoadjustPaths[u.id]) {{
+                      window.geoadjustPaths[u.id].setLatLngs(u.path);
+                      window.geoadjustPaths[u.id].setStyle({{color: u.path_color}});
+                  }} else {{
+                      window.geoadjustPaths[u.id] = L.polyline(u.path, {{
+                          color: u.path_color, weight: 3, opacity: 0.7
+                      }}).addTo(geoMap);
+                  }}
+              }} else if (window.geoadjustPaths[u.id]) {{
+                  geoMap.removeLayer(window.geoadjustPaths[u.id]);
+                  delete window.geoadjustPaths[u.id];
+              }}
           }});
-          // Drop markers for members who are no longer in the active list
+          // Drop markers + paths for members who are no longer in the active list
           Object.keys(window.geoadjustMarkers).forEach(function(id) {{
               if (!seen[id]) {{
                   geoMap.removeLayer(window.geoadjustMarkers[id]);
                   delete window.geoadjustMarkers[id];
+                  if (window.geoadjustPaths[id]) {{
+                      geoMap.removeLayer(window.geoadjustPaths[id]);
+                      delete window.geoadjustPaths[id];
+                  }}
               }}
           }});
       }};
@@ -774,6 +825,7 @@ with tab3:
         room_data["members"][user_id]["last_heartbeat"] = now_ts
 
         current_gps_quality = "🔴 No Fix"
+        current_speed_kmh = None
         if loc and "coords" in loc:
             coords = loc["coords"]
             lat = coords.get("latitude")
@@ -783,6 +835,24 @@ with tab3:
             current_gps_quality = gps_quality_label(acc)
 
             user_color = room_data["members"][user_id]["color"]
+
+            # --- Track history (path trail) + speed derived from consecutive fixes ---
+            tracks = room_data.setdefault("tracks", {})
+            track = tracks.setdefault(user_id, [])
+            prev_point = track[-1] if track else None
+            track.append({"lat": lat, "lon": lon, "ts": now_ts})
+            if len(track) > MAX_TRACK_POINTS:
+                del track[: len(track) - MAX_TRACK_POINTS]
+
+            if prev_point:
+                dt_sec = (now_ts - prev_point["ts"]).total_seconds()
+                if dt_sec > 0:
+                    dist_m = haversine_m(prev_point["lat"], prev_point["lon"], lat, lon)
+                    current_speed_kmh = round((dist_m / dt_sec) * 3.6, 1)
+                else:
+                    current_speed_kmh = 0.0
+            else:
+                current_speed_kmh = 0.0
 
             # Update live marker state (this is what makes the map move in real time)
             room_data["locations"][user_id] = {
@@ -794,6 +864,7 @@ with tab3:
                 "updated_at": current_time_str,
                 "last_seen": now_ts,
                 "color": user_color,
+                "speed_kmh": current_speed_kmh,
             }
 
             log_event(
@@ -801,6 +872,7 @@ with tab3:
                 extra={
                     "Latitude": lat, "Longitude": lon,
                     "Altitude_m": round(alt, 2), "Accuracy_m": round(acc, 2),
+                    "Speed_kmh": current_speed_kmh,
                 },
             )
         else:
@@ -861,7 +933,7 @@ with tab3:
 
         # --- Status Bar ---
         st.markdown("---")
-        s1, s2, s3, s4, s5 = st.columns(5)
+        s1, s2, s3, s4, s5, s6 = st.columns(6)
         s1.metric("Your Status", "🟢 Online")
         s2.metric("Date (GMT+8)", current_date_str)
         s3.metric("Time In", room_data["members"][user_id]["time_in"].strftime("%H:%M:%S"))
@@ -870,6 +942,7 @@ with tab3:
             net_label += f" ({net_type})"
         s4.metric("Network", net_label)
         s5.metric("GPS Signal", current_gps_quality)
+        s6.metric("Your Speed", f"{current_speed_kmh} km/h" if current_speed_kmh is not None else "—")
         st.caption(f"🕒 Current Time (GMT+8): {current_time_str}")
 
         # --- Main Layout Split ---
@@ -878,6 +951,7 @@ with tab3:
         # --- Left Column: OpenStreetMap with Custom User Pins ---
         with col_map:
             st.subheader("🗺️ Live OpenStreetMap")
+            show_path = st.checkbox("🛣️ Show movement path", value=True, key="show_path")
 
             active_locs = {
                 uid: loc for uid, loc in room_data["locations"].items()
@@ -890,12 +964,13 @@ with tab3:
                     first_loc = next(iter(active_locs.values()))
                     st.session_state["map_center"] = [first_loc["latitude"], first_loc["longitude"]]
 
-                # Build the small payload of marker updates for this tick.
+                # Build the small payload of marker + path updates for this tick.
                 users_payload = []
                 for uid, u in active_locs.items():
                     online = (now_ts - u["last_seen"]) <= timedelta(seconds=ONLINE_THRESHOLD_SEC)
                     icon_color = u["color"] if online else "grey"
                     icon_url, _ = marker_icon_urls(icon_color)
+                    speed_txt = f"{u.get('speed_kmh', 0.0)} km/h" if u.get("speed_kmh") is not None else "—"
                     popup_html = (
                         f"<b>User:</b> {u['user_id']}<br>"
                         f"<b>Status:</b> {'Online' if online else 'Offline'}<br>"
@@ -903,8 +978,15 @@ with tab3:
                         f"<b>Lon:</b> {u['longitude']:.5f}<br>"
                         f"<b>Alt:</b> {u['altitude_m']:.2f} m<br>"
                         f"<b>Acc:</b> ±{u['accuracy_m']:.2f} m<br>"
+                        f"<b>Speed:</b> {speed_txt}<br>"
                         f"<b>Updated:</b> {u['updated_at']}"
                     )
+                    # Path trail (last ~50 min of fixes), only sent when the toggle is on.
+                    path_points = []
+                    if show_path:
+                        track = room_data.get("tracks", {}).get(uid, [])
+                        path_points = [[p["lat"], p["lon"]] for p in track]
+
                     users_payload.append(
                         {
                             "id": uid,
@@ -913,6 +995,8 @@ with tab3:
                             "icon_url": icon_url,
                             "popup": popup_html,
                             "tooltip": f"{'📍' if online else '⚪'} {u['user_id']}",
+                            "path": path_points,
+                            "path_color": u["color"],
                         }
                     )
 
@@ -976,21 +1060,45 @@ with tab3:
             else:
                 st.caption("No chat messages sent in this room yet.")
 
-        # --- Export Section: Unified Log (GPS Tracks + Chat Log Combined) ---
+        # --- Logging Section: live, auto-refreshing view split by user ---
         st.markdown("---")
-        st.subheader("💾 Unified Room History Export")
-        st.caption("Download the consolidated spatial tracking log and chat message transcript combined into a single chronological CSV file.")
+        st.subheader("📜 Logging Data")
+        st.caption(
+            "Live view of the tracking + chat log (updates every 10s, same data as the downloads below). "
+            "Split into an overall timeline and one tab per member, named after the username they joined with."
+        )
 
-        if room_data["unified_log"]:
-            df_unified = pd.DataFrame(room_data["unified_log"])
-            csv_unified = df_unified.to_csv(index=False).encode("utf-8")
+        member_names = list(room_data["members"].keys())  # preserves join order
+        tab_labels = ["🕒 Overall"] + [f"👤 {name}" for name in member_names]
+        log_tabs = st.tabs(tab_labels)
 
-            st.download_button(
-                label="📥 Download Unified Track & Chat Log (.csv)",
-                data=csv_unified,
-                file_name=f"Unified_Room_Log_{current_room}_{today_str()}.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-        else:
-            st.info("No room events recorded yet to download.")
+        with log_tabs[0]:
+            df_overall = build_log_dataframe(room_data)
+            if not df_overall.empty:
+                st.dataframe(df_overall, use_container_width=True, hide_index=True, height=280)
+                st.download_button(
+                    label="📥 Download Overall Log (.csv)",
+                    data=df_overall.to_csv(index=False).encode("utf-8"),
+                    file_name=f"Log_{current_room}_Overall_{today_str()}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                    key="dl_overall",
+                )
+            else:
+                st.info("No room events recorded yet.")
+
+        for idx, name in enumerate(member_names, start=1):
+            with log_tabs[idx]:
+                df_user = build_log_dataframe(room_data, user_filter=name)
+                if not df_user.empty:
+                    st.dataframe(df_user, use_container_width=True, hide_index=True, height=280)
+                    st.download_button(
+                        label=f"📥 Download {name}'s Log (.csv)",
+                        data=df_user.to_csv(index=False).encode("utf-8"),
+                        file_name=f"Log_{current_room}_{name}_{today_str()}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                        key=f"dl_{name}",
+                    )
+                else:
+                    st.info(f"No events recorded yet for {name}.")
