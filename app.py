@@ -535,7 +535,7 @@ with tab1:
             else:
                 df_input = pd.read_excel(uploaded_file, header=0 if has_header else None)
 
-            expected_cols = ["From_Point", "To_Point", "dH_m", "Dist_km", "StdDev_mm"]
+            expected_cols = ["From Station", "To Station", "Diff. Height(m)", "Distance(m)", "StdDev_mm"]
             if not has_header or len(df_input.columns) < 3:
                 rename_map = {i: expected_cols[i] for i in range(min(len(df_input.columns), 5))}
                 df_input = df_input.rename(columns=rename_map)
