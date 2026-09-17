@@ -1,6 +1,7 @@
 import io
 import os
 import json
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -46,7 +47,6 @@ st.markdown(
 )
 
 # --- GLOBAL CROSS-DEVICE MEMORY REGISTRY ---
-# This dictionary is shared across ALL devices/browsers connected to the app server instance.
 @st.cache_resource
 def get_global_room_registry():
     return {}
@@ -60,14 +60,12 @@ COLOR_EMOJI = {
 }
 
 # --- Real-Time Tracking Settings ---
-TIMEZONE = ZoneInfo("Asia/Kuala_Lumpur")  # GMT+8 (matches Johor Bahru / Singapore)
+TIMEZONE = ZoneInfo("Asia/Kuala_Lumpur")  # GMT+8
 ONLINE_THRESHOLD_SEC = 20      # no GPS update within this window -> flagged Offline
 STALE_ROOM_MINUTES = 60        # room auto-clears if nobody has been seen for this long
-MAX_TRACK_POINTS = 300         # cap stored trail points per user (~50 min at 10s/fix)
+MAX_TRACK_POINTS = 500         # cap stored trail points per user
 MARKER_ICON_BASE = "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-{color}.png"
 MARKER_SHADOW = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png"
-
-
 
 
 # =========================================================
@@ -82,12 +80,10 @@ def fmt_time(dt):
 
 
 def today_str():
-    """Today's date (GMT+8) — used to stamp output filenames."""
     return now_local().strftime("%Y-%m-%d")
 
 
 def gps_quality_label(acc):
-    """Rough GPS signal quality from the browser-reported accuracy (meters)."""
     if acc is None:
         return "🔴 No Fix"
     if acc <= 15:
@@ -98,7 +94,6 @@ def gps_quality_label(acc):
 
 
 def is_room_stale(room_data):
-    """A room is stale (abandoned) if nobody has been seen for STALE_ROOM_MINUTES."""
     last_seen_times = [
         loc.get("last_seen") for loc in room_data.get("locations", {}).values() if loc.get("last_seen")
     ]
@@ -137,7 +132,7 @@ def build_members_table(room_data):
     rows = []
     for uid, minfo in room_data["members"].items():
         if minfo.get("time_out") is not None:
-            continue  # already left explicitly
+            continue
         loc = room_data["locations"].get(uid)
         online = bool(loc and loc.get("last_seen") and (now_local() - loc["last_seen"]) <= timedelta(seconds=ONLINE_THRESHOLD_SEC))
         legend = f"{COLOR_EMOJI.get(minfo.get('color'), '⚪')} {minfo.get('color', '-')}"
@@ -171,7 +166,6 @@ SHEET_INVALID_CHARS = set('[]:*?/\\')
 
 
 def sanitize_sheet_name(name, used_names):
-    """Excel sheet names: no [ ] : * ? / \\, max 31 chars, must be unique."""
     clean = "".join(c for c in name if c not in SHEET_INVALID_CHARS).strip() or "User"
     clean = clean[:31]
     base, i = clean, 2
@@ -184,12 +178,6 @@ def sanitize_sheet_name(name, used_names):
 
 
 def build_full_log_workbook(room_data):
-    """
-    A single .xlsx with an 'Overall' sheet (full chronological log) plus one
-    sheet per member (named after their username), each with just their own
-    events — the closest real equivalent to 'tabs' in a downloadable file,
-    since a plain .csv cannot contain multiple sheets.
-    """
     buffer = io.BytesIO()
     used_sheet_names = set()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -211,12 +199,110 @@ def marker_icon_urls(color):
     return MARKER_ICON_BASE.format(color=color), MARKER_SHADOW
 
 
+def generate_kml_track(user_id, track_points):
+    """Generates an OGC-compliant KML file for Google Earth playback."""
+    kml = ET.Element('kml', xmlns="http://www.opengis.net/kml/2.2")
+    document = ET.SubElement(kml, 'Document')
+    
+    name = ET.SubElement(document, 'name')
+    name.text = f"GPS Path - {user_id}"
+    
+    style = ET.SubElement(document, 'Style', id="yellowLineGreenPoly")
+    line_style = ET.SubElement(style, 'LineStyle')
+    ET.SubElement(line_style, 'color').text = "7f00ffff"
+    ET.SubElement(line_style, 'width').text = "4"
+    
+    folder = ET.SubElement(document, 'Folder')
+    ET.SubElement(folder, 'name').text = "Recorded Path"
+    
+    placemark = ET.SubElement(folder, 'Placemark')
+    ET.SubElement(placemark, 'name').text = f"Track: {user_id}"
+    ET.SubElement(placemark, 'styleUrl').text = "#yellowLineGreenPoly"
+    
+    line_string = ET.SubElement(placemark, 'LineString')
+    ET.SubElement(line_string, 'extrude').text = "1"
+    ET.SubElement(line_string, 'tessellate').text = "1"
+    ET.SubElement(line_string, 'altitudeMode').text = "relativeToGround"
+    
+    coords_str = " ".join([f"{p['lon']},{p['lat']},{p.get('alt', 0)}" for p in track_points])
+    ET.SubElement(line_string, 'coordinates').text = coords_str
+    
+    return ET.tostring(kml, encoding='utf-8', method='xml')
+
+
+def build_playback_map_html(track_points):
+    """Interactive Leaflet Path Playback Widget."""
+    points_json = json.dumps([
+        {"lat": p["lat"], "lon": p["lon"], "time": fmt_time(p["ts"])}
+        for p in track_points
+    ])
+    
+    return f"""
+    <div id="playback-container" style="height:350px; width:100%; position:relative;">
+        <div id="playback-map" style="height:290px; width:100%;"></div>
+        <div style="padding:10px; background:#f8f9fa; display:flex; align-items:center; gap:10px;">
+            <button id="playBtn" onclick="togglePlay()" style="padding:5px 15px; background:#1E88E5; color:white; border:none; border-radius:4px; cursor:pointer;">▶ Play</button>
+            <input type="range" id="timeSlider" min="0" max="{max(0, len(track_points)-1)}" value="0" oninput="seekPath(this.value)" style="flex-grow:1;">
+            <span id="timeDisplay" style="font-size:12px; font-family:sans-serif; color:#333;">--:--:--</span>
+        </div>
+    </div>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+    <script>
+        var points = {points_json};
+        if (points.length > 0) {{
+            var pbMap = L.map('playback-map').setView([points[0].lat, points[0].lon], 16);
+            L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png').addTo(pbMap);
+            
+            var latlngs = points.map(p => [p.lat, p.lon]);
+            var polyline = L.polyline(latlngs, {{color: 'blue', weight: 3}}).addTo(pbMap);
+            pbMap.fitBounds(polyline.getBounds());
+            
+            var marker = L.marker([points[0].lat, points[0].lon]).addTo(pbMap);
+            
+            var currentIndex = 0;
+            var isPlaying = false;
+            var interval = null;
+            
+            function updatePosition(index) {{
+                currentIndex = index;
+                var p = points[index];
+                marker.setLatLng([p.lat, p.lon]);
+                document.getElementById('timeSlider').value = index;
+                document.getElementById('timeDisplay').innerText = p.time;
+            }}
+            
+            function seekPath(val) {{
+                updatePosition(parseInt(val));
+            }}
+            
+            function togglePlay() {{
+                var btn = document.getElementById('playBtn');
+                if (isPlaying) {{
+                    clearInterval(interval);
+                    isPlaying = false;
+                    btn.innerText = "▶ Play";
+                }} else {{
+                    isPlaying = true;
+                    btn.innerText = "⏸ Pause";
+                    interval = setInterval(function() {{
+                        if (currentIndex >= points.length - 1) {{
+                            clearInterval(interval);
+                            isPlaying = false;
+                            btn.innerText = "▶ Play";
+                        }} else {{
+                            updatePosition(currentIndex + 1);
+                        }}
+                    }}, 800);
+                }}
+            }}
+            updatePosition(0);
+        }}
+    </script>
+    """
+
+
 def build_base_map_html(center, zoom, room_id):
-    """
-    Rendered ONCE per room session. Sets up a persistent Leaflet map that is
-    never rebuilt afterwards — only its markers move (see build_updater_html) —
-    which is what stops the map area from reloading/blinking on every refresh.
-    """
     return f"""
     <div id="geoadjust-map-anchor" data-room="{room_id}" style="height:450px;width:100%;">
       <div id="geoadjust-leaflet-map" style="height:100%;width:100%;"></div>
@@ -233,7 +319,6 @@ def build_base_map_html(center, zoom, room_id):
       window.geoadjustMarkers = {{}};
       window.geoadjustPaths = {{}};
 
-      // Move / create / remove markers + path trails WITHOUT touching the map or tile layer.
       window.updateMarkers = function(users) {{
           var seen = {{}};
           users.forEach(function(u) {{
@@ -259,8 +344,6 @@ def build_base_map_html(center, zoom, room_id):
                       .bindTooltip(u.tooltip);
               }}
 
-              // Path trail (only drawn when the caller sends 2+ points; an
-              // empty/short path means "path display is off" -> remove it).
               if (u.path && u.path.length > 1) {{
                   if (window.geoadjustPaths[u.id]) {{
                       window.geoadjustPaths[u.id].setLatLngs(u.path);
@@ -275,7 +358,6 @@ def build_base_map_html(center, zoom, room_id):
                   delete window.geoadjustPaths[u.id];
               }}
           }});
-          // Drop markers + paths for members who are no longer in the active list
           Object.keys(window.geoadjustMarkers).forEach(function(id) {{
               if (!seen[id]) {{
                   geoMap.removeLayer(window.geoadjustMarkers[id]);
@@ -298,12 +380,6 @@ def build_base_map_html(center, zoom, room_id):
 
 
 def build_updater_html(room_id, users_payload):
-    """
-    A tiny, INVISIBLE (height=0) component re-run on every autorefresh tick.
-    It reaches into the already-mounted map iframe (found via the data-room
-    marker set in build_base_map_html) and posts fresh marker positions into
-    it — the map iframe itself is never recreated, so it never blinks.
-    """
     payload_json = json.dumps(users_payload)
     return f"""
     <script>
@@ -321,28 +397,15 @@ def build_updater_html(room_id, users_payload):
                         );
                         break;
                     }}
-                }} catch (inner) {{ /* different iframe, ignore and keep looking */ }}
+                }} catch (inner) {{ }}
             }}
-        }} catch (e) {{ /* map not mounted yet — next tick will retry */ }}
+        }} catch (e) {{ }}
     }})();
     </script>
     """
 
 
 def build_wakelock_html():
-    """
-    Best-effort: request a Screen Wake Lock so the phone doesn't auto-lock its
-    screen from idle timeout while this tab is open and visible, and try again
-    whenever the tab regains foreground focus.
-
-    Important limits (can't be worked around from a web page):
-    - This only prevents an IDLE screen-lock. If the user manually presses the
-      power button, or the OS suspends the tab because another app is opened,
-      browsers pause page JavaScript (including GPS updates) to save battery —
-      no website can override that.
-    - True background tracking needs an installed PWA/native app with OS-level
-      background-location permission, which is outside what Streamlit can do.
-    """
     return """
     <script>
     (function() {
@@ -351,7 +414,7 @@ def build_wakelock_html():
                 if ('wakeLock' in navigator) {
                     window.geoadjustWakeLock = await navigator.wakeLock.request('screen');
                 }
-            } catch (e) { /* not supported / not permitted here — ignore */ }
+            } catch (e) { }
         }
         requestWakeLock();
         document.addEventListener('visibilitychange', function() {
@@ -372,7 +435,7 @@ tab1, tab2, tab3 = st.tabs([
 ])
 
 # =========================================================
-# TAB 1: 1D NETWORK ADJUSTMENT (LEVELLING)
+# TAB 1: 1D NETWORK ADJUSTMENT
 # =========================================================
 with tab1:
     st.header("📏 1D Leveling Network Adjustment")
@@ -398,16 +461,6 @@ with tab1:
             "Output Filename Base", value="1D_Adjustment_Results", key="1d_out_name"
         )
 
-    with st.expander("ℹ️ Required File Format Guide"):
-        st.markdown("""
-        Upload **`.csv`** or **`.xlsx`** structured as follows:
-        * **Column 1**: From Station ID (e.g., `CP001`)
-        * **Column 2**: To Station ID (e.g., `TBM2`)
-        * **Column 3**: Height Difference $dH$ in meters ($m$)
-        * **Column 4** *(Optional)*: Line Distance ($km$)
-        * **Column 5** *(Optional)*: Standard Deviation ($mm$)
-        """)
-
     uploaded_file = st.file_uploader(
         "Upload Leveling File (.csv or .xlsx)",
         type=["csv", "xlsx"],
@@ -417,40 +470,21 @@ with tab1:
     if uploaded_file is not None:
         try:
             if uploaded_file.name.endswith(".csv"):
-                df_input = pd.read_csv(
-                    uploaded_file, header=0 if has_header else None
-                )
+                df_input = pd.read_csv(uploaded_file, header=0 if has_header else None)
             else:
-                df_input = pd.read_excel(
-                    uploaded_file, header=0 if has_header else None
-                )
+                df_input = pd.read_excel(uploaded_file, header=0 if has_header else None)
 
-            expected_cols = [
-                "From_Point",
-                "To_Point",
-                "dH_m",
-                "Dist_km",
-                "StdDev_mm",
-            ]
+            expected_cols = ["From_Point", "To_Point", "dH_m", "Dist_km", "StdDev_mm"]
             if not has_header or len(df_input.columns) < 3:
-                rename_map = {
-                    i: expected_cols[i]
-                    for i in range(min(len(df_input.columns), 5))
-                }
+                rename_map = {i: expected_cols[i] for i in range(min(len(df_input.columns), 5))}
                 df_input = df_input.rename(columns=rename_map)
 
             st.subheader("📋 Input Data Preview")
             st.dataframe(df_input.head(10), use_container_width=True)
 
-            if st.button(
-                "🚀 Run 1D Adjustment",
-                type="primary",
-                use_container_width=True,
-            ):
+            if st.button("🚀 Run 1D Adjustment", type="primary", use_container_width=True):
                 with st.spinner("Computing Least Squares..."):
-                    st.session_state["results_1d"] = adjust_1d_network(
-                        df_input, bm_name, bm_height
-                    )
+                    st.session_state["results_1d"] = adjust_1d_network(df_input, bm_name, bm_height)
                     st.success("Adjustment Complete!")
 
         except Exception as e:
@@ -470,151 +504,65 @@ with tab1:
         col_tbl1, col_tbl2 = st.columns(2)
         with col_tbl1:
             st.subheader("📍 Adjusted Station Heights")
-            st.dataframe(
-                res["stations"],
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Station": st.column_config.TextColumn("Station ID"),
-                    "Adjusted Height (m)": st.column_config.NumberColumn(
-                        "Adjusted Height (m)", format="%.4f"
-                    ),
-                    "Std Dev (mm)": st.column_config.NumberColumn(
-                        "Std Error (mm)", format="%.2f"
-                    ),
-                    "Status": st.column_config.TextColumn("Status"),
-                },
-            )
+            st.dataframe(res["stations"], use_container_width=True, hide_index=True)
 
         with col_tbl2:
             st.subheader("📏 Observation Residuals")
-            st.dataframe(
-                res["residuals"], use_container_width=True, hide_index=True
-            )
+            st.dataframe(res["residuals"], use_container_width=True, hide_index=True)
 
         st.markdown("---")
-        st.subheader("💾 Export & Save Output")
-
-        btn_col1, btn_col2 = st.columns(2)
-
         excel_buffer = io.BytesIO()
         with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-            res["stations"].to_excel(
-                writer, sheet_name="Adjusted Heights", index=False
-            )
-            res["residuals"].to_excel(
-                writer, sheet_name="Residuals", index=False
-            )
+            res["stations"].to_excel(writer, sheet_name="Adjusted Heights", index=False)
+            res["residuals"].to_excel(writer, sheet_name="Residuals", index=False)
 
-        with btn_col1:
-            st.download_button(
-                label="📥 Save & Download Excel Output (.xlsx)",
-                data=excel_buffer.getvalue(),
-                file_name=f"{custom_filename}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-
-        csv_data = res["stations"].to_csv(index=False).encode("utf-8")
-        with btn_col2:
-            st.download_button(
-                label="📥 Save & Download Stations CSV (.csv)",
-                data=csv_data,
-                file_name=f"{custom_filename}_stations.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
+        st.download_button(
+            label="📥 Save & Download Excel Output (.xlsx)",
+            data=excel_buffer.getvalue(),
+            file_name=f"{custom_filename}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
 
 # =========================================================
 # TAB 2: 3D GNSS NETWORK ADJUSTMENT
 # =========================================================
 with tab2:
     st.header("🛰️ 3D GNSS Vector Network Adjustment")
-    st.caption(
-        "MATLAB-Aligned Parametric 3D Geodetic Vector Least Squares Adjustment"
-    )
+    st.caption("MATLAB-Aligned Parametric 3D Geodetic Vector Least Squares Adjustment")
 
     col_3d_1, col_3d_2 = st.columns(2)
     with col_3d_1:
-        stn_const_name = st.text_input(
-            "Fixed Station Name", value="SPGR", key="3d_const_name"
-        )
-        has_header_3d = st.checkbox(
-            "File contains a header row", value=True, key="3d_header"
-        )
-        custom_filename_3d = st.text_input(
-            "Output Filename Base",
-            value="3D_GNSS_Adjustment_Results",
-            key="3d_out_name",
-        )
+        stn_const_name = st.text_input("Fixed Station Name", value="SPGR", key="3d_const_name")
+        has_header_3d = st.checkbox("File contains a header row", value=True, key="3d_header")
+        custom_filename_3d = st.text_input("Output Filename Base", value="3D_GNSS_Adjustment_Results", key="3d_out_name")
 
     with col_3d_2:
         st.markdown("**Constrained Station Coordinates (ECEF)**")
         col_x, col_y, col_z = st.columns(3)
         with col_x:
-            const_x = st.number_input(
-                "X (m)",
-                value=-1468840.4040,
-                format="%.4f",
-                step=0.0001,
-                key="3d_x",
-            )
+            const_x = st.number_input("X (m)", value=-1468840.4040, format="%.4f", step=0.0001, key="3d_x")
         with col_y:
-            const_y = st.number_input(
-                "Y (m)",
-                value=6203485.7950,
-                format="%.4f",
-                step=0.0001,
-                key="3d_y",
-            )
+            const_y = st.number_input("Y (m)", value=6203485.7950, format="%.4f", step=0.0001, key="3d_y")
         with col_z:
-            const_z = st.number_input(
-                "Z (m)", value=200173.7140, format="%.4f", step=0.0001, key="3d_z"
-            )
+            const_z = st.number_input("Z (m)", value=200173.7140, format="%.4f", step=0.0001, key="3d_z")
 
-    with st.expander("ℹ️ Required File Format Guide"):
-        st.markdown("""
-        Upload **`.xlsx`** or **`.csv`** containing 11 baseline observation and covariance columns:
-        * **Column 1**: `TO` Station ID
-        * **Column 2**: `FROM` Station ID
-        * **Column 3-5**: Baseline Components `dX`, `dY`, `dZ` (meters)
-        * **Column 6-11**: Covariance Matrix upper triangular terms `Var(dX)`, `Cov(dX,dY)`, `Cov(dX,dZ)`, `Var(dY)`, `Cov(dY,dZ)`, `Var(dZ)`
-        """)
-
-    uploaded_file_3d = st.file_uploader(
-        "Upload Baseline Vector File (.xlsx or .csv)",
-        type=["xlsx", "csv"],
-        key="3d_file_uploader",
-    )
+    uploaded_file_3d = st.file_uploader("Upload Baseline Vector File (.xlsx or .csv)", type=["xlsx", "csv"], key="3d_file_uploader")
 
     if uploaded_file_3d is not None:
         try:
             if uploaded_file_3d.name.endswith(".csv"):
-                df_input_3d = pd.read_csv(
-                    uploaded_file_3d, header=0 if has_header_3d else None
-                )
+                df_input_3d = pd.read_csv(uploaded_file_3d, header=0 if has_header_3d else None)
             else:
-                df_input_3d = pd.read_excel(
-                    uploaded_file_3d, header=0 if has_header_3d else None
-                )
+                df_input_3d = pd.read_excel(uploaded_file_3d, header=0 if has_header_3d else None)
 
             st.subheader("📋 Input Vector Preview")
             st.dataframe(df_input_3d.head(10), use_container_width=True)
 
-            if st.button(
-                "🚀 Run 3D Adjustment",
-                type="primary",
-                use_container_width=True,
-                key="btn_run_3d",
-            ):
+            if st.button("🚀 Run 3D Adjustment", type="primary", use_container_width=True, key="btn_run_3d"):
                 with st.spinner("Computing 3D Least Squares..."):
                     Ta_coords = [const_x, const_y, const_z]
-                    st.session_state["results_3d"] = adjust_3d_network(
-                        df_input_3d,
-                        const_name=stn_const_name,
-                        Ta=Ta_coords,
-                        jns=1,
-                    )
+                    st.session_state["results_3d"] = adjust_3d_network(df_input_3d, const_name=stn_const_name, Ta=Ta_coords, jns=1)
                     st.success("3D Network Adjustment Complete!")
 
         except Exception as e:
@@ -622,7 +570,6 @@ with tab2:
 
     if "results_3d" in st.session_state:
         res3d = st.session_state["results_3d"]
-
         st.markdown("---")
         st.subheader("📊 3D Adjustment Summary Statistics")
         m1, m2, m3, m4 = st.columns(4)
@@ -631,102 +578,26 @@ with tab2:
         m3.metric("Degrees of Freedom", res3d["dof"])
         m4.metric("Sum VᵀPV", f"{res3d['vTpv']:.5f}")
 
-        col_tbl1_3d, col_tbl2_3d = st.columns(2)
-        with col_tbl1_3d:
-            st.subheader("📍 Adjusted 3D Coordinates (ECEF)")
-            st.dataframe(
-                res3d["stations"],
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Station": st.column_config.TextColumn("Station ID"),
-                    "X (m)": st.column_config.NumberColumn(
-                        "X (m)", format="%.4f"
-                    ),
-                    "Y (m)": st.column_config.NumberColumn(
-                        "Y (m)", format="%.4f"
-                    ),
-                    "Z (m)": st.column_config.NumberColumn(
-                        "Z (m)", format="%.4f"
-                    ),
-                    "σX (mm)": st.column_config.NumberColumn(
-                        "σX (mm)", format="%.2f"
-                    ),
-                    "σY (mm)": st.column_config.NumberColumn(
-                        "σY (mm)", format="%.2f"
-                    ),
-                    "σZ (mm)": st.column_config.NumberColumn(
-                        "σZ (mm)", format="%.2f"
-                    ),
-                    "Status": st.column_config.TextColumn("Status"),
-                },
-            )
-
-        with col_tbl2_3d:
-            st.subheader("📏 Baseline Residuals")
-            st.dataframe(
-                res3d["residuals"],
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "From": st.column_config.TextColumn("From"),
-                    "To": st.column_config.TextColumn("To"),
-                    "V_dX (m)": st.column_config.NumberColumn(
-                        "V_dX (m)", format="%.5f"
-                    ),
-                    "V_dY (m)": st.column_config.NumberColumn(
-                        "V_dY (m)", format="%.5f"
-                    ),
-                    "V_dZ (m)": st.column_config.NumberColumn(
-                        "V_dZ (m)", format="%.5f"
-                    ),
-                },
-            )
-
-        st.markdown("---")
-        st.subheader("💾 Export & Save 3D Output")
-
-        btn_col1_3d, btn_col2_3d = st.columns(2)
-
         excel_buffer_3d = io.BytesIO()
         with pd.ExcelWriter(excel_buffer_3d, engine="openpyxl") as writer:
-            res3d["stations"].to_excel(
-                writer, sheet_name="Adjusted Coordinates", index=False
-            )
-            res3d["residuals"].to_excel(
-                writer, sheet_name="Residuals", index=False
-            )
+            res3d["stations"].to_excel(writer, sheet_name="Adjusted Coordinates", index=False)
+            res3d["residuals"].to_excel(writer, sheet_name="Residuals", index=False)
 
-        with btn_col1_3d:
-            st.download_button(
-                label="📥 Save & Download 3D Excel Output (.xlsx)",
-                data=excel_buffer_3d.getvalue(),
-                file_name=f"{custom_filename_3d}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-
-        csv_data_3d = res3d["stations"].to_csv(index=False).encode("utf-8")
-        with btn_col2_3d:
-            st.download_button(
-                label="📥 Save & Download 3D Stations CSV (.csv)",
-                data=csv_data_3d,
-                file_name=f"{custom_filename_3d}_stations.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
+        st.download_button(
+            label="📥 Save & Download 3D Excel Output (.xlsx)",
+            data=excel_buffer_3d.getvalue(),
+            file_name=f"{custom_filename_3d}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
 
 # =========================================================
-# TAB 3: REAL-TIME TRACKING (CROSS-DEVICE OPENSTREETMAP MODULE)
+# TAB 3: REAL-TIME TRACKING
 # =========================================================
 with tab3:
     if "user_room_session" not in st.session_state:
         st.session_state["user_room_session"] = {
-            "authenticated": False,
-            "room_id": "",
-            "room_pass": "",
-            "username": "",
-            "role": "",
+            "authenticated": False, "room_id": "", "room_pass": "", "username": "", "role": ""
         }
     if "show_leave_confirm" not in st.session_state:
         st.session_state["show_leave_confirm"] = False
@@ -739,7 +610,6 @@ with tab3:
 
     session = st.session_state["user_room_session"]
 
-    # --- Step 1: Room Access Form ---
     if not session["authenticated"]:
         st.markdown("<br>", unsafe_allow_html=True)
         login_col1, login_col2, login_col3 = st.columns([1, 2, 1])
@@ -758,17 +628,10 @@ with tab3:
             with st.form("room_login_form"):
                 input_user = st.text_input("👤 Username", value="User_1")
                 input_room = st.text_input("🏠 Room ID", value="DemoRoom")
-                input_pass = st.text_input(
-                    "🔑 Password", type="password", value="123456"
-                )
-                input_role = st.selectbox(
-                    "🎯 Role",
-                    ["Field Surveyor", "🏢 Control Center (Office)"],
-                )
+                input_pass = st.text_input("🔑 Password", type="password", value="123456")
+                input_role = st.selectbox("🎯 Role", ["Field Surveyor", "🏢 Control Center (Office)"])
 
-                submit_login = st.form_submit_button(
-                    "🚀 Enter Room", use_container_width=True, type="primary"
-                )
+                submit_login = st.form_submit_button("🚀 Enter Room", use_container_width=True, type="primary")
 
                 if submit_login:
                     if not input_user or not input_room or not input_pass:
@@ -777,7 +640,6 @@ with tab3:
                         room_key = input_room.strip()
                         user_clean = input_user.strip()
 
-                        # Auto-clear abandoned rooms (nobody seen for STALE_ROOM_MINUTES)
                         if room_key in GLOBAL_ROOMS_REGISTRY and is_room_stale(GLOBAL_ROOMS_REGISTRY[room_key]):
                             purge_room(GLOBAL_ROOMS_REGISTRY, room_key)
 
@@ -788,22 +650,7 @@ with tab3:
                                 st.stop()
 
                             existing_member = room_data["members"].get(user_clean)
-                            if existing_member and existing_member.get("time_out") is None:
-                                hb = existing_member.get("last_heartbeat")
-                                currently_active = bool(
-                                    hb and (now_local() - hb) <= timedelta(seconds=ONLINE_THRESHOLD_SEC)
-                                )
-                                if currently_active:
-                                    st.error(
-                                        f"⚠️ The username '{user_clean}' is already active in this room right now. "
-                                        "Please choose a different username, or wait a moment and try again if that was you."
-                                    )
-                                    st.stop()
-                                # Existing member, but inactive/stale -> treat as a rejoin
-                                existing_member["time_out"] = None
-                                log_event(room_data, room_key, user_clean, "REJOIN")
-                            elif existing_member:
-                                # Member had explicitly left before -> welcome them back fresh
+                            if existing_member:
                                 existing_member["time_out"] = None
                                 log_event(room_data, room_key, user_clean, "REJOIN")
                             else:
@@ -842,22 +689,6 @@ with tab3:
                         st.session_state["_map_base_room"] = None
                         st.rerun()
 
-            st.warning(
-                "⚠️ **Notice**: GEOADJUST does not store data on a database server. "
-                "A room's tracking and chat log is cleared once every member has explicitly left, "
-                "or automatically after "
-                f"{STALE_ROOM_MINUTES} minutes of total inactivity. "
-                "If your tab or app closes unexpectedly, log back in with the **same Username, Room ID and "
-                "Password** within that window to rejoin seamlessly — download your CSV before leaving!"
-            )
-            st.caption(
-                "📶 Your browser will ask for location permission once — allow it, and it won't ask again on "
-                "this device. Keep this tab open and in the foreground for tracking to keep updating; most "
-                "phone browsers pause GPS updates once you switch apps or lock the screen, which no website "
-                "can override."
-            )
-
-    # --- Step 2: Active Tracking Room Engine ---
     else:
         current_room = session["room_id"]
         user_id = session["username"]
@@ -869,32 +700,18 @@ with tab3:
             session["authenticated"] = False
             st.rerun()
 
-        # Auto-refresh every 10 seconds; refresh_count changes each cycle
         refresh_count = st_autorefresh(interval=10000, key="tracking_autorefresh")
 
-        # --- Force a FRESH browser GPS + connectivity read every cycle ---
-        # (A changing component key prevents the browser call from being cached/stale.)
         loc = get_geolocation(component_key=f"geo_{refresh_count}")
-        net_online = streamlit_js_eval(
-            js_expressions="navigator.onLine", key=f"net_online_{refresh_count}"
-        )
-        net_type = streamlit_js_eval(
-            js_expressions="navigator.connection ? navigator.connection.effectiveType : 'unknown'",
-            key=f"net_type_{refresh_count}",
-        )
+        net_online = streamlit_js_eval(js_expressions="navigator.onLine", key=f"net_online_{refresh_count}")
+        net_type = streamlit_js_eval(js_expressions="navigator.connection ? navigator.connection.effectiveType : 'unknown'", key=f"net_type_{refresh_count}")
 
         now_ts = now_local()
         current_time_str = fmt_time(now_ts)
         current_date_str = now_ts.strftime("%Y-%m-%d")
 
-        # Heartbeat: proves this browser tab is still alive/running the app,
-        # independent of whether GPS succeeds — used to detect username collisions
-        # and to tell a genuine rejoin apart from someone else still active.
         room_data["members"][user_id]["last_heartbeat"] = now_ts
 
-        # Best-effort: keep the screen from auto-locking from idle timeout while
-        # this tab is open (see build_wakelock_html() docstring for what this
-        # can't do — it can't force true background execution).
         if not st.session_state.get("_wakelock_requested"):
             components.html(build_wakelock_html(), height=0)
             st.session_state["_wakelock_requested"] = True
@@ -910,14 +727,12 @@ with tab3:
 
             user_color = room_data["members"][user_id]["color"]
 
-            # --- Track history (used to draw the movement path on the map) ---
             tracks = room_data.setdefault("tracks", {})
             track = tracks.setdefault(user_id, [])
-            track.append({"lat": lat, "lon": lon, "ts": now_ts})
+            track.append({"lat": lat, "lon": lon, "alt": alt, "ts": now_ts})
             if len(track) > MAX_TRACK_POINTS:
                 del track[: len(track) - MAX_TRACK_POINTS]
 
-            # Update live marker state (this is what makes the map move in real time)
             room_data["locations"][user_id] = {
                 "user_id": user_id,
                 "latitude": lat,
@@ -931,59 +746,43 @@ with tab3:
 
             log_event(
                 room_data, current_room, user_id, "GPS_UPDATE",
-                extra={
-                    "Latitude": lat, "Longitude": lon,
-                    "Altitude_m": round(alt, 2), "Accuracy_m": round(acc, 2),
-                },
+                extra={"Latitude": lat, "Longitude": lon, "Altitude_m": round(alt, 2), "Accuracy_m": round(acc, 2)},
             )
         else:
             st.sidebar.warning("⏳ Awaiting Browser GPS Permissions / Signal...")
 
-        # Top Control Bar
         head_col1, head_col2 = st.columns([3, 1])
         with head_col1:
             st.subheader(f"📍 Room: `{current_room}`")
-            st.caption(
-                f"Logged in as **{user_id}** ({'Control Center Admin' if is_admin else 'Field Surveyor'})"
-            )
+            st.caption(f"Logged in as **{user_id}** ({'Control Center Admin' if is_admin else 'Field Surveyor'})")
         with head_col2:
             if st.button("🚪 Leave Room", use_container_width=True):
                 st.session_state["show_leave_confirm"] = True
                 st.rerun()
 
-        # --- Leave confirmation popup: remind to download before leaving ---
         if st.session_state["show_leave_confirm"]:
-            st.warning(
-                "⚠️ **Before you leave** — please download your tracking & chat records if you need them. "
-                "Once **every** member has left, this room's data is permanently cleared."
-            )
+            st.warning("⚠️ **Before you leave** — please download your logs if needed.")
             dl_col, confirm_col, cancel_col = st.columns(3)
             with dl_col:
                 if room_data["unified_log"]:
                     st.download_button(
-                        "📥 Download Log Now (.xlsx)",
+                        "📥 Download Log (.xlsx)",
                         data=build_full_log_workbook(room_data),
                         file_name=f"Log_{current_room}_{today_str()}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
-                        key="confirm_leave_download",
                     )
-                else:
-                    st.caption("No data recorded yet.")
             with confirm_col:
                 if st.button("✅ Confirm Leave", type="primary", use_container_width=True):
                     room_data["members"][user_id]["time_out"] = now_local()
                     room_data["locations"].pop(user_id, None)
                     log_event(room_data, current_room, user_id, "LEAVE")
 
-                    all_left = all(m.get("time_out") is not None for m in room_data["members"].values())
-                    if all_left:
+                    if all(m.get("time_out") is not None for m in room_data["members"].values()):
                         purge_room(GLOBAL_ROOMS_REGISTRY, current_room)
 
                     session["authenticated"] = False
                     st.session_state["show_leave_confirm"] = False
-                    st.session_state["map_center"] = None
-                    st.session_state["_map_base_room"] = None
                     st.rerun()
             with cancel_col:
                 if st.button("❌ Cancel", use_container_width=True):
@@ -991,23 +790,8 @@ with tab3:
                     st.rerun()
             st.stop()
 
-        # --- Status Bar ---
-        st.markdown("---")
-        s1, s2, s3, s4, s5 = st.columns(5)
-        s1.metric("Your Status", "🟢 Online")
-        s2.metric("Date (GMT+8)", current_date_str)
-        s3.metric("Time In", room_data["members"][user_id]["time_in"].strftime("%H:%M:%S"))
-        net_label = "🟢 Connected" if net_online else "🔴 Disconnected"
-        if net_type and net_type != "unknown":
-            net_label += f" ({net_type})"
-        s4.metric("Network", net_label)
-        s5.metric("GPS Signal", current_gps_quality)
-        st.caption(f"🕒 Current Time (GMT+8): {current_time_str}")
-
-        # --- Main Layout Split ---
         col_map, col_chat = st.columns([2, 1])
 
-        # --- Left Column: OpenStreetMap with Custom User Pins ---
         with col_map:
             st.subheader("🗺️ Live OpenStreetMap")
             show_path = st.checkbox("🛣️ Show movement path", value=True, key="show_path")
@@ -1018,149 +802,90 @@ with tab3:
             }
 
             if active_locs:
-                # Only set the initial center once per session.
                 if st.session_state["map_center"] is None:
                     first_loc = next(iter(active_locs.values()))
                     st.session_state["map_center"] = [first_loc["latitude"], first_loc["longitude"]]
 
-                # Build the small payload of marker + path updates for this tick.
                 users_payload = []
                 for uid, u in active_locs.items():
                     online = (now_ts - u["last_seen"]) <= timedelta(seconds=ONLINE_THRESHOLD_SEC)
                     icon_color = u["color"] if online else "grey"
                     icon_url, _ = marker_icon_urls(icon_color)
-                    popup_html = (
-                        f"<b>User:</b> {u['user_id']}<br>"
-                        f"<b>Status:</b> {'Online' if online else 'Offline'}<br>"
-                        f"<b>Lat:</b> {u['latitude']:.5f}<br>"
-                        f"<b>Lon:</b> {u['longitude']:.5f}<br>"
-                        f"<b>Alt:</b> {u['altitude_m']:.2f} m<br>"
-                        f"<b>Acc:</b> ±{u['accuracy_m']:.2f} m<br>"
-                        f"<b>Updated:</b> {u['updated_at']}"
-                    )
-                    # Path trail (last ~50 min of fixes), only sent when the toggle is on.
+                    popup_html = f"<b>User:</b> {u['user_id']}<br><b>Lat:</b> {u['latitude']:.5f}<br><b>Lon:</b> {u['longitude']:.5f}"
                     path_points = []
                     if show_path:
                         track = room_data.get("tracks", {}).get(uid, [])
                         path_points = [[p["lat"], p["lon"]] for p in track]
 
-                    users_payload.append(
-                        {
-                            "id": uid,
-                            "lat": u["latitude"],
-                            "lon": u["longitude"],
-                            "icon_url": icon_url,
-                            "popup": popup_html,
-                            "tooltip": f"{'📍' if online else '⚪'} {u['user_id']}",
-                            "path": path_points,
-                            "path_color": u["color"],
-                        }
-                    )
+                    users_payload.append({
+                        "id": uid, "lat": u["latitude"], "lon": u["longitude"],
+                        "icon_url": icon_url, "popup": popup_html, "tooltip": f"📍 {u['user_id']}",
+                        "path": path_points, "path_color": u["color"]
+                    })
 
                 if st.session_state.get("_map_base_room") != current_room:
-                    # Build the persistent map's HTML ONCE per room and cache the
-                    # string itself (not just a flag) — we need to keep passing this
-                    # exact same string on every future rerun.
                     st.session_state["_map_base_html"] = build_base_map_html(
                         st.session_state["map_center"], st.session_state["map_zoom"], current_room
                     )
                     st.session_state["_map_base_room"] = current_room
 
-                # Render the map on EVERY rerun (so it stays present on screen), but
-                # always with the identical cached HTML string. Since the content
-                # doesn't change, the browser has nothing new to load -> no reload,
-                # no blink. Actual movement is delivered separately below.
                 components.html(st.session_state["_map_base_html"], height=450)
-
-                # Tiny, invisible (height=0) component sent on every tick — it finds
-                # the map iframe above and moves its markers via postMessage. Because
-                # this component is invisible, its own content changing every tick
-                # (fresh coordinates) causes no visible flicker.
-                updater_html = build_updater_html(current_room, users_payload)
-                components.html(updater_html, height=0)
+                components.html(build_updater_html(current_room, users_payload), height=0)
 
                 st.markdown("**Active Team Members**")
-                st.dataframe(
-                    build_members_table(room_data),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                st.dataframe(build_members_table(room_data), use_container_width=True, hide_index=True)
 
-                with st.expander("📍 View / Download Your Path"):
-                    own_track = room_data.get("tracks", {}).get(user_id, [])
-                    if own_track:
-                        df_own_path = pd.DataFrame(
-                            [
-                                {"Timestamp": fmt_time(p["ts"]), "Latitude": p["lat"], "Longitude": p["lon"]}
-                                for p in own_track
-                            ]
-                        )
-                        st.dataframe(df_own_path, use_container_width=True, hide_index=True, height=220)
-                        st.download_button(
-                            "📥 Download Your Path (.csv)",
-                            data=df_own_path.to_csv(index=False).encode("utf-8"),
-                            file_name=f"Path_{current_room}_{user_id}_{today_str()}.csv",
-                            mime="text/csv",
-                            use_container_width=True,
-                            key="dl_own_path",
-                        )
-                    else:
-                        st.caption("No path points recorded yet.")
+                # --- REPLACED: Playback and KML Export Section ---
+                st.markdown("---")
+                st.subheader("🎬 Path Playback & Export")
+                own_track = room_data.get("tracks", {}).get(user_id, [])
+                
+                if len(own_track) > 1:
+                    components.html(build_playback_map_html(own_track), height=360)
+                    
+                    kml_data = generate_kml_track(user_id, own_track)
+                    st.download_button(
+                        label="🌐 Download Path (.KML for Google Earth)",
+                        data=kml_data,
+                        file_name=f"Path_{current_room}_{user_id}_{today_str()}.kml",
+                        mime="application/vnd.google-earth.kml+xml",
+                        use_container_width=True,
+                        key="dl_own_kml",
+                    )
+                else:
+                    st.info("Awaiting recorded path points for playback (at least 2 GPS updates needed).")
+
             else:
                 st.info("No active team members sharing GPS coordinates in this room.")
 
-        # --- Right Column: Chat System ---
         with col_chat:
             st.subheader("💬 Room Chat")
-
             with st.form("send_chat_form", clear_on_submit=True):
                 chat_msg = st.text_input("Message:")
                 btn_send = st.form_submit_button("Send", use_container_width=True)
 
                 if btn_send and chat_msg.strip():
-                    log_event(
-                        room_data, current_room, user_id, "CHAT_MESSAGE",
-                        extra={"Chat_Message": chat_msg.strip()},
-                    )
+                    log_event(room_data, current_room, user_id, "CHAT_MESSAGE", extra={"Chat_Message": chat_msg.strip()})
                     st.rerun()
 
-            st.markdown("---")
-            chat_events = [
-                log for log in room_data["unified_log"] if log["Event_Type"] == "CHAT_MESSAGE"
-            ]
-
+            chat_events = [log for log in room_data["unified_log"] if log["Event_Type"] == "CHAT_MESSAGE"]
             if chat_events:
                 chat_container = st.container(height=300)
                 with chat_container:
                     for msg in reversed(chat_events):
                         time_only = msg["Timestamp"].split(" ")[1]
                         st.markdown(f"**{msg['User_ID']}** ({time_only}): {msg['Chat_Message']}")
-            else:
-                st.caption("No chat messages sent in this room yet.")
 
-        # --- Logging Section: live overall view (most recent 20 events) ---
         st.markdown("---")
         st.subheader("📜 Logging Data — Overall")
-        st.caption(
-            "Live view of the 20 most recent tracking + chat events (auto-refreshes every 10s). "
-            "Older records aren't shown here, but the full history is included in the download below."
-        )
-
         df_overall = build_log_dataframe(room_data)
         if not df_overall.empty:
             st.dataframe(df_overall.head(20), use_container_width=True, hide_index=True, height=280)
-        else:
-            st.info("No room events recorded yet.")
 
         st.download_button(
-            label="📥 Download Full Log (.xlsx — Overall + one sheet per user)",
+            label="📥 Download Full Log (.xlsx)",
             data=build_full_log_workbook(room_data),
             file_name=f"Log_{current_room}_{today_str()}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
-            key="dl_full_workbook",
-        )
-        st.caption(
-            "A plain .csv can't hold multiple tabs, so the full breakdown "
-            "(Overall + one sheet per user, named after their username) is provided as an Excel file."
         )
