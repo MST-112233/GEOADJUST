@@ -59,11 +59,10 @@ COLOR_EMOJI = {
     "violet": "🟣", "gold": "🟡", "black": "⚫", "grey": "⚪",
 }
 
-# --- Real-Time Tracking Settings ---
 TIMEZONE = ZoneInfo("Asia/Kuala_Lumpur")  # GMT+8
-ONLINE_THRESHOLD_SEC = 20      # no GPS update within this window -> flagged Offline
-STALE_ROOM_MINUTES = 60        # room auto-clears if nobody has been seen for this long
-MAX_TRACK_POINTS = 500         # cap stored trail points per user
+ONLINE_THRESHOLD_SEC = 20      
+STALE_ROOM_MINUTES = 60        
+MAX_TRACK_POINTS = 500         
 MARKER_ICON_BASE = "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-{color}.png"
 MARKER_SHADOW = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png"
 
@@ -199,83 +198,161 @@ def marker_icon_urls(color):
     return MARKER_ICON_BASE.format(color=color), MARKER_SHADOW
 
 
-def generate_kml_track(user_id, track_points):
-    """Generates an OGC-compliant KML file for Google Earth playback."""
+# =========================================================
+# ENHANCED: Multi-User KML Exporter Engine
+# =========================================================
+def generate_kml_export(room_data, selected_user="🌐 All Users (Combined)"):
+    """
+    Generates a single or multi-track OGC-compliant KML file with styled 
+    3D paths and time-stamped placemarks for Google Earth playback.
+    """
     kml = ET.Element('kml', xmlns="http://www.opengis.net/kml/2.2")
     document = ET.SubElement(kml, 'Document')
     
     name = ET.SubElement(document, 'name')
-    name.text = f"GPS Path - {user_id}"
-    
-    style = ET.SubElement(document, 'Style', id="yellowLineGreenPoly")
-    line_style = ET.SubElement(style, 'LineStyle')
-    ET.SubElement(line_style, 'color').text = "7f00ffff"
-    ET.SubElement(line_style, 'width').text = "4"
-    
-    folder = ET.SubElement(document, 'Folder')
-    ET.SubElement(folder, 'name').text = "Recorded Path"
-    
-    placemark = ET.SubElement(folder, 'Placemark')
-    ET.SubElement(placemark, 'name').text = f"Track: {user_id}"
-    ET.SubElement(placemark, 'styleUrl').text = "#yellowLineGreenPoly"
-    
-    line_string = ET.SubElement(placemark, 'LineString')
-    ET.SubElement(line_string, 'extrude').text = "1"
-    ET.SubElement(line_string, 'tessellate').text = "1"
-    ET.SubElement(line_string, 'altitudeMode').text = "relativeToGround"
-    
-    coords_str = " ".join([f"{p['lon']},{p['lat']},{p.get('alt', 0)}" for p in track_points])
-    ET.SubElement(line_string, 'coordinates').text = coords_str
-    
+    name.text = f"GEOADJUST GPS Tracks - {selected_user}"
+
+    tracks_dict = room_data.get("tracks", {})
+    members_dict = room_data.get("members", {})
+
+    target_users = list(tracks_dict.keys()) if selected_user == "🌐 All Users (Combined)" else [selected_user]
+
+    for uid in target_users:
+        user_track = tracks_dict.get(uid, [])
+        if not user_track:
+            continue
+        
+        user_color = members_dict.get(uid, {}).get("color", "blue")
+        
+        # Define Line Style per user
+        style_id = f"style_{uid}"
+        style = ET.SubElement(document, 'Style', id=style_id)
+        line_style = ET.SubElement(style, 'LineStyle')
+        ET.SubElement(line_style, 'color').text = "7f00ffff" # Default yellow/cyan mix
+        ET.SubElement(line_style, 'width').text = "4"
+        
+        folder = ET.SubElement(document, 'Folder')
+        ET.SubElement(folder, 'name').text = f"Track - {uid}"
+        
+        placemark = ET.SubElement(folder, 'Placemark')
+        ET.SubElement(placemark, 'name').text = f"Path: {uid}"
+        ET.SubElement(placemark, 'styleUrl').text = f"#{style_id}"
+        
+        line_string = ET.SubElement(placemark, 'LineString')
+        ET.SubElement(line_string, 'extrude').text = "1"
+        ET.SubElement(line_string, 'tessellate').text = "1"
+        ET.SubElement(line_string, 'altitudeMode').text = "relativeToGround"
+        
+        coords_str = " ".join([f"{p['lon']},{p['lat']},{p.get('alt', 0)}" for p in user_track])
+        ET.SubElement(line_string, 'coordinates').text = coords_str
+
     return ET.tostring(kml, encoding='utf-8', method='xml')
 
 
-def build_playback_map_html(track_points):
-    """Interactive Leaflet Path Playback Widget."""
-    points_json = json.dumps([
-        {"lat": p["lat"], "lon": p["lon"], "time": fmt_time(p["ts"])}
-        for p in track_points
-    ])
+# =========================================================
+# ENHANCED: Multi-User Interactive Path Playback
+# =========================================================
+def build_multi_playback_map_html(room_data, selected_user="🌐 All Users (Combined)"):
+    """
+    Renders an interactive playback player capable of playing back single 
+    or synchronized multi-user movement paths in assigned colors.
+    """
+    tracks_dict = room_data.get("tracks", {})
+    members_dict = room_data.get("members", {})
     
+    payload = {}
+    max_steps = 0
+    
+    target_users = list(tracks_dict.keys()) if selected_user == "🌐 All Users (Combined)" else [selected_user]
+
+    for uid in target_users:
+        track = tracks_dict.get(uid, [])
+        if track:
+            color = members_dict.get(uid, {}).get("color", "blue")
+            icon_url, _ = marker_icon_urls(color)
+            payload[uid] = {
+                "color": color,
+                "icon_url": icon_url,
+                "points": [{"lat": p["lat"], "lon": p["lon"], "time": fmt_time(p["ts"])} for p in track]
+            }
+            if len(track) > max_steps:
+                max_steps = len(track)
+
+    payload_json = json.dumps(payload)
+
     return f"""
-    <div id="playback-container" style="height:350px; width:100%; position:relative;">
-        <div id="playback-map" style="height:290px; width:100%;"></div>
+    <div id="playback-container" style="height:380px; width:100%; position:relative;">
+        <div id="playback-map" style="height:320px; width:100%;"></div>
         <div style="padding:10px; background:#f8f9fa; display:flex; align-items:center; gap:10px;">
             <button id="playBtn" onclick="togglePlay()" style="padding:5px 15px; background:#1E88E5; color:white; border:none; border-radius:4px; cursor:pointer;">▶ Play</button>
-            <input type="range" id="timeSlider" min="0" max="{max(0, len(track_points)-1)}" value="0" oninput="seekPath(this.value)" style="flex-grow:1;">
+            <input type="range" id="timeSlider" min="0" max="{max(0, max_steps-1)}" value="0" oninput="seekPath(this.value)" style="flex-grow:1;">
             <span id="timeDisplay" style="font-size:12px; font-family:sans-serif; color:#333;">--:--:--</span>
         </div>
     </div>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
     <script>
-        var points = {points_json};
-        if (points.length > 0) {{
-            var pbMap = L.map('playback-map').setView([points[0].lat, points[0].lon], 16);
+        var trackData = {payload_json};
+        var users = Object.keys(trackData);
+        
+        if (users.length > 0) {{
+            var firstUser = users[0];
+            var firstPt = trackData[firstUser].points[0];
+            
+            var pbMap = L.map('playback-map').setView([firstPt.lat, firstPt.lon], 15);
             L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png').addTo(pbMap);
             
-            var latlngs = points.map(p => [p.lat, p.lon]);
-            var polyline = L.polyline(latlngs, {{color: 'blue', weight: 3}}).addTo(pbMap);
-            pbMap.fitBounds(polyline.getBounds());
+            var markers = {{}};
+            var polylines = {{}};
+            var allBounds = L.latLngBounds();
+
+            users.forEach(function(uid) {{
+                var uData = trackData[uid];
+                var latlngs = uData.points.map(p => [p.lat, p.lon]);
+                
+                var poly = L.polyline(latlngs, {{color: uData.color, weight: 3, opacity: 0.7}}).addTo(pbMap);
+                polylines[uid] = poly;
+                allBounds.extend(poly.getBounds());
+                
+                var icon = L.icon({{
+                    iconUrl: uData.icon_url,
+                    shadowUrl: "{MARKER_SHADOW}",
+                    iconSize: [25, 41],
+                    iconAnchor: [12, 41]
+                }});
+                
+                markers[uid] = L.marker([uData.points[0].lat, uData.points[0].lon], {{icon: icon}})
+                    .bindTooltip("📍 " + uid)
+                    .addTo(pbMap);
+            }});
             
-            var marker = L.marker([points[0].lat, points[0].lon]).addTo(pbMap);
+            pbMap.fitBounds(allBounds);
             
             var currentIndex = 0;
+            var maxSteps = {max_steps};
             var isPlaying = false;
             var interval = null;
-            
-            function updatePosition(index) {{
+
+            function updatePositions(index) {{
                 currentIndex = index;
-                var p = points[index];
-                marker.setLatLng([p.lat, p.lon]);
+                var latestTime = "--:--:--";
+                
+                users.forEach(function(uid) {{
+                    var pts = trackData[uid].points;
+                    var idx = Math.min(index, pts.length - 1);
+                    var p = pts[idx];
+                    markers[uid].setLatLng([p.lat, p.lon]);
+                    latestTime = p.time;
+                }});
+                
                 document.getElementById('timeSlider').value = index;
-                document.getElementById('timeDisplay').innerText = p.time;
+                document.getElementById('timeDisplay').innerText = latestTime;
             }}
-            
+
             function seekPath(val) {{
-                updatePosition(parseInt(val));
+                updatePositions(parseInt(val));
             }}
-            
+
             function togglePlay() {{
                 var btn = document.getElementById('playBtn');
                 if (isPlaying) {{
@@ -286,17 +363,17 @@ def build_playback_map_html(track_points):
                     isPlaying = true;
                     btn.innerText = "⏸ Pause";
                     interval = setInterval(function() {{
-                        if (currentIndex >= points.length - 1) {{
+                        if (currentIndex >= maxSteps - 1) {{
                             clearInterval(interval);
                             isPlaying = false;
                             btn.innerText = "▶ Play";
                         }} else {{
-                            updatePosition(currentIndex + 1);
+                            updatePositions(currentIndex + 1);
                         }}
-                    }}, 800);
+                    }}, 700);
                 }}
             }}
-            updatePosition(0);
+            updatePositions(0);
         }}
     </script>
     """
@@ -443,29 +520,13 @@ with tab1:
 
     col_cfg1, col_cfg2 = st.columns(2)
     with col_cfg1:
-        bm_name = st.text_input(
-            "Fixed Benchmark Station Name", value="BMFGHT", key="1d_bm_name"
-        )
-        has_header = st.checkbox(
-            "File contains a header row", value=False, key="1d_header"
-        )
+        bm_name = st.text_input("Fixed Benchmark Station Name", value="BMFGHT", key="1d_bm_name")
+        has_header = st.checkbox("File contains a header row", value=False, key="1d_header")
     with col_cfg2:
-        bm_height = st.number_input(
-            "Benchmark Height (m)",
-            value=100.0000,
-            step=0.0001,
-            format="%.4f",
-            key="1d_bm_height",
-        )
-        custom_filename = st.text_input(
-            "Output Filename Base", value="1D_Adjustment_Results", key="1d_out_name"
-        )
+        bm_height = st.number_input("Benchmark Height (m)", value=100.0000, step=0.0001, format="%.4f", key="1d_bm_height")
+        custom_filename = st.text_input("Output Filename Base", value="1D_Adjustment_Results", key="1d_out_name")
 
-    uploaded_file = st.file_uploader(
-        "Upload Leveling File (.csv or .xlsx)",
-        type=["csv", "xlsx"],
-        key="1d_file_uploader",
-    )
+    uploaded_file = st.file_uploader("Upload Leveling File (.csv or .xlsx)", type=["csv", "xlsx"], key="1d_file_uploader")
 
     if uploaded_file is not None:
         try:
@@ -492,7 +553,6 @@ with tab1:
 
     if "results_1d" in st.session_state:
         res = st.session_state["results_1d"]
-
         st.markdown("---")
         st.subheader("📊 Adjustment Summary Statistics")
         m1, m2, m3, m4 = st.columns(4)
@@ -835,25 +895,37 @@ with tab3:
                 st.markdown("**Active Team Members**")
                 st.dataframe(build_members_table(room_data), use_container_width=True, hide_index=True)
 
-                # --- REPLACED: Playback and KML Export Section ---
+                # =========================================================
+                # FLEXIBLE PATH PLAYBACK & EXPORT SELECTION CONTROLS
+                # =========================================================
                 st.markdown("---")
-                st.subheader("🎬 Path Playback & Export")
-                own_track = room_data.get("tracks", {}).get(user_id, [])
+                st.subheader("🎬 Path Playback & KML Export Settings")
                 
-                if len(own_track) > 1:
-                    components.html(build_playback_map_html(own_track), height=360)
-                    
-                    kml_data = generate_kml_track(user_id, own_track)
-                    st.download_button(
-                        label="🌐 Download Path (.KML for Google Earth)",
-                        data=kml_data,
-                        file_name=f"Path_{current_room}_{user_id}_{today_str()}.kml",
-                        mime="application/vnd.google-earth.kml+xml",
-                        use_container_width=True,
-                        key="dl_own_kml",
-                    )
-                else:
-                    st.info("Awaiting recorded path points for playback (at least 2 GPS updates needed).")
+                all_tracked_users = list(room_data.get("tracks", {}).keys())
+                playback_options = ["🌐 All Users (Combined)"] + all_tracked_users
+                
+                selected_playback_target = st.selectbox(
+                    "🎯 Choose User Path to View / Playback / Export:",
+                    options=playback_options,
+                    index=0,
+                    key="pb_target_select"
+                )
+
+                # Render dynamic playback player
+                components.html(build_multi_playback_map_html(room_data, selected_playback_target), height=390)
+
+                # Dynamic export based on selected target
+                kml_export_data = generate_kml_export(room_data, selected_playback_target)
+                target_filename = selected_playback_target.replace(" ", "_").replace("🌐_", "")
+                
+                st.download_button(
+                    label=f"🌐 Download KML Path for '{selected_playback_target}'",
+                    data=kml_export_data,
+                    file_name=f"Path_{current_room}_{target_filename}_{today_str()}.kml",
+                    mime="application/vnd.google-earth.kml+xml",
+                    use_container_width=True,
+                    key="dl_flexible_kml",
+                )
 
             else:
                 st.info("No active team members sharing GPS coordinates in this room.")
