@@ -4,11 +4,11 @@ import math
 ELLIPSOIDS = {
     "GRS80": {"a": 6378137.0, "inv_f": 298.257222101},
     "WGS84": {"a": 6378137.0, "inv_f": 298.257223563},
-    "Everest 1830": {"a": 6377276.345, "inv_f": 300.8017},
+    "Everest 1830": {"a": 6377276.34518, "inv_f": 300.80173},
     "Modified Everest (Peninsular Malaysia)": {"a": 6377304.063, "inv_f": 300.8017},
     "Modified Everest (Borneo)": {"a": 6377298.556, "inv_f": 300.8017},
-    "Clarke 1858": {"a": 6378293.645, "inv_f": 294.26},
-    "Bessel 1841": {"a": 6377397.155, "inv_f": 299.1528128}
+    "Clarke 1858": {"a": 6378249.145, "inv_f": 293.465},
+    "Bessel 1841": {"a": 6377397.155, "inv_f": 299.15281}
 }
 
 # 7-Parameter Helmert Transformations (dx, dy, dz in meters, rx, ry, rz in arcsec, s in ppm)
