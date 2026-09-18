@@ -945,12 +945,11 @@ with tab3:
         )
 
 # =========================================================
-# TAB 4: DATUM TRANSFORMATION & MAP PROJECTION (GDTS V4.01)
+# TAB 4: DATUM TRANSFORMATION & MAP PROJECTION 
 # =========================================================
 with tab4:
-    st.header("🧭 Geodetic Datum Transformation System (GDTS v4.01)")
-    st.caption("Registered to Jabatan Ukur dan Pemetaan Malaysia (JUPEM)")
-
+    st.header("🧭 Geodetic Datum Transformation System")
+    
     mode = st.radio(
         "Select Operation Mode:",
         ["3-Dimensional Transformation", "Map Projection", "Geodetic Tools (Conversion)"],
