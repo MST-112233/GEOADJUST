@@ -503,7 +503,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # =========================================================
 with tab1:
     st.header("📏 1D Leveling Network Adjustment")
-    st.caption("MATLAB-Aligned Parametric Least Squares Leveling Engine")
+
 
     col_cfg1, col_cfg2 = st.columns(2)
     with col_cfg1:
@@ -949,6 +949,7 @@ with tab3:
 # =========================================================
 with tab4:
     st.header("🧭 Geodetic Datum Transformation System")
+
     
     mode = st.radio(
         "Select Operation Mode:",
