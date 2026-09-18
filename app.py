@@ -14,6 +14,9 @@ from streamlit_js_eval import get_geolocation, streamlit_js_eval
 from network_1d import adjust_1d_network
 from network_3d import adjust_3d_network
 
+# --- Import GDTS Datum Transformation Engine ---
+import datum_transform as dt
+
 # --- 1. Page Configuration ---
 st.set_page_config(page_title="GEOADJUST", page_icon="🌐", layout="wide")
 
@@ -198,14 +201,7 @@ def marker_icon_urls(color):
     return MARKER_ICON_BASE.format(color=color), MARKER_SHADOW
 
 
-# =========================================================
-# ENHANCED: Multi-User KML Exporter Engine
-# =========================================================
 def generate_kml_export(room_data, selected_user="🌐 All Users (Combined)"):
-    """
-    Generates a single or multi-track OGC-compliant KML file with styled 
-    3D paths and time-stamped placemarks for Google Earth playback.
-    """
     kml = ET.Element('kml', xmlns="http://www.opengis.net/kml/2.2")
     document = ET.SubElement(kml, 'Document')
     
@@ -222,13 +218,10 @@ def generate_kml_export(room_data, selected_user="🌐 All Users (Combined)"):
         if not user_track:
             continue
         
-        user_color = members_dict.get(uid, {}).get("color", "blue")
-        
-        # Define Line Style per user
         style_id = f"style_{uid}"
         style = ET.SubElement(document, 'Style', id=style_id)
         line_style = ET.SubElement(style, 'LineStyle')
-        ET.SubElement(line_style, 'color').text = "7f00ffff" # Default yellow/cyan mix
+        ET.SubElement(line_style, 'color').text = "7f00ffff"
         ET.SubElement(line_style, 'width').text = "4"
         
         folder = ET.SubElement(document, 'Folder')
@@ -249,14 +242,7 @@ def generate_kml_export(room_data, selected_user="🌐 All Users (Combined)"):
     return ET.tostring(kml, encoding='utf-8', method='xml')
 
 
-# =========================================================
-# ENHANCED: Multi-User Interactive Path Playback
-# =========================================================
 def build_multi_playback_map_html(room_data, selected_user="🌐 All Users (Combined)"):
-    """
-    Renders an interactive playback player capable of playing back single 
-    or synchronized multi-user movement paths in assigned colors.
-    """
     tracks_dict = room_data.get("tracks", {})
     members_dict = room_data.get("members", {})
     
@@ -505,10 +491,11 @@ def build_wakelock_html():
 
 
 # --- 2. Main Navigation Tabs ---
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "📏 1D Levelling",
     "🛰️ 3D GNSS",
     "📍 Real-Time Tracking",
+    "🧭 Datum Transformation",
 ])
 
 # =========================================================
@@ -603,9 +590,9 @@ with tab2:
         with col_x:
             const_x = st.number_input("X (m)", value=-1468840.4040, format="%.4f", step=0.0001, key="3d_x")
         with col_y:
-            const_y = st.number_input("Y (m)", value=6203485.7950, format="%.4f", step=0.0001, key="3d_y")
+            const_y = st.number_input("Y (m)", value=6203485.7950, format="%.4f", step=0.0001, key="3d_z")
         with col_z:
-            const_z = st.number_input("Z (m)", value=200173.7140, format="%.4f", step=0.0001, key="3d_z")
+            const_z = st.number_input("Z (m)", value=200173.7140, format="%.4f", step=0.0001, key="3d_y")
 
     uploaded_file_3d = st.file_uploader("Upload Baseline Vector File (.xlsx or .csv)", type=["xlsx", "csv"], key="3d_file_uploader")
 
@@ -895,9 +882,6 @@ with tab3:
                 st.markdown("**Active Team Members**")
                 st.dataframe(build_members_table(room_data), use_container_width=True, hide_index=True)
 
-                # =========================================================
-                # FLEXIBLE PATH PLAYBACK & EXPORT SELECTION CONTROLS
-                # =========================================================
                 st.markdown("---")
                 st.subheader("🎬 Path Playback & KML Export Settings")
                 
@@ -911,10 +895,8 @@ with tab3:
                     key="pb_target_select"
                 )
 
-                # Render dynamic playback player
                 components.html(build_multi_playback_map_html(room_data, selected_playback_target), height=390)
 
-                # Dynamic export based on selected target
                 kml_export_data = generate_kml_export(room_data, selected_playback_target)
                 target_filename = selected_playback_target.replace(" ", "_").replace("🌐_", "")
                 
@@ -961,3 +943,180 @@ with tab3:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
+
+# =========================================================
+# TAB 4: DATUM TRANSFORMATION & MAP PROJECTION (GDTS V4.01)
+# =========================================================
+with tab4:
+    st.header("🧭 Geodetic Datum Transformation System (GDTS v4.01)")
+    st.caption("Registered to Jabatan Ukur dan Pemetaan Malaysia (JUPEM)")
+
+    mode = st.radio(
+        "Select Operation Mode:",
+        ["3-Dimensional Transformation", "Map Projection", "Geodetic Tools (Conversion)"],
+        horizontal=True,
+        key="gdts_mode"
+    )
+
+    st.markdown("---")
+
+    # -----------------------------------------------------
+    # MODE 1: 3-Dimensional Transformation
+    # -----------------------------------------------------
+    if mode == "3-Dimensional Transformation":
+        st.subheader("📐 3D Datum Transformation")
+        
+        region = st.selectbox("Select Region / Zone:", ["Peninsular Malaysia", "Sabah and Sarawak"], key="trans_region")
+
+        if region == "Peninsular Malaysia":
+            modules = [
+                "1. GDM2000 to PMSGN94", "2. PMSGN94 to GDM2000",
+                "3. GDM2000 to MRT48", "4. MRT48 to GDM2000",
+                "5. PMSGN94 to MRT48", "6. MRT48 to PMSGN94"
+            ]
+        else:
+            modules = [
+                "1. GDM2000 to EMSGN97", "2. EMSGN97 to GDM2000",
+                "3. GDM2000 to BT68 for Sabah", "4. BT68 to GDM2000 for Sabah",
+                "5. EMSGN97 to BT68 for Sabah", "6. BT68 to EMSGN97 for Sabah",
+                "7. GDM2000 to BT68 for Sarawak", "8. BT68 to GDM2000 for Sarawak",
+                "9. EMSGN97 to BT68 for Sarawak", "10. BT68 to EMSGN97 for Sarawak"
+            ]
+
+        selected_module = st.selectbox("Transformation Module:", modules, key="trans_module_sel")
+        module_key = selected_module.split(". ", 1)[1]
+
+        col_in1, col_in2, col_in3 = st.columns(3)
+        with col_in1:
+            st.markdown("**Latitude**")
+            d_lat = st.number_input("Deg", value=1, key="trans_d_lat")
+            m_lat = st.number_input("Min", value=29, key="trans_m_lat")
+            s_lat = st.number_input("Sec", value=0.0, format="%.4f", key="trans_s_lat")
+        with col_in2:
+            st.markdown("**Longitude**")
+            d_lon = st.number_input("Deg", value=103, key="trans_d_lon")
+            m_lon = st.number_input("Min", value=45, key="trans_m_lon")
+            s_lon = st.number_input("Sec", value=0.0, format="%.4f", key="trans_s_lon")
+        with col_in3:
+            st.markdown("**Ellipsoidal Height**")
+            h_in = st.number_input("Height (m)", value=10.000, format="%.3f", key="trans_h_in")
+            stn_name = st.text_input("Station Name", value="STN01", key="trans_stn_name")
+
+        if st.button("⚡ Transform Coordinates", type="primary", use_container_width=True, key="btn_transform"):
+            lat_in = dt.dms_to_deg(d_lat, m_lat, s_lat)
+            lon_in = dt.dms_to_deg(d_lon, m_lon, s_lon)
+            
+            lat_out, lon_out, h_out = dt.bursa_wolf_transform(lat_in, lon_in, h_in, module_key)
+            out_d_lat, out_m_lat, out_s_lat = dt.deg_to_dms(lat_out)
+            out_d_lon, out_m_lon, out_s_lon = dt.deg_to_dms(lon_out)
+
+            st.success("Transformation Successful!")
+            st.markdown("### 📊 Transformed Output Results")
+            
+            df_res = pd.DataFrame([{
+                "Station": stn_name,
+                "From Latitude": f"{d_lat}° {m_lat}' {s_lat:.2f}\"",
+                "From Longitude": f"{d_lon}° {m_lon}' {s_lon:.2f}\"",
+                "From Ell. Height (m)": f"{h_in:.3f}",
+                "To Latitude": f"{out_d_lat}° {out_m_lat}' {out_s_lat:.2f}\"",
+                "To Longitude": f"{out_d_lon}° {out_m_lon}' {out_s_lon:.2f}\"",
+                "To Ell. Height (m)": f"{h_out:.3f}"
+            }])
+            st.dataframe(df_res, use_container_width=True, hide_index=True)
+
+    # -----------------------------------------------------
+    # MODE 2: Map Projection
+    # -----------------------------------------------------
+    elif mode == "Map Projection":
+        st.subheader("🗺️ Map Projection System")
+        proj_region = st.selectbox("Select Region:", ["Peninsular Malaysia", "Sabah and Sarawak"], key="proj_region")
+
+        if proj_region == "Peninsular Malaysia":
+            proj_modules = [
+                "1. GDM2000 to RSO Geocentric (Peninsular)",
+                "2. RSO Geocentric for Peninsular to GDM2000",
+                "3. GDM2000 to Cassini-Soldner Geocentric",
+                "4. Cassini-Soldner Geocentric to GDM2000",
+                "5. MRT48 to MRSO(Old)", "6. MRSO(Old) to MRT48",
+                "7. MRSO(Old) to Cassini-Soldner(Old)", "8. Cassini-Soldner(Old) to MRSO(Old)"
+            ]
+            state_options = ["Johor", "Kedah", "Kelantan", "Melaka", "Negeri Sembilan", "Pahang", "Penang", "Perak", "Perlis", "Selangor", "Terengganu"]
+        else:
+            proj_modules = [
+                "1. GDM2000 to RSO Geocentric (Sabah and Sarawak)",
+                "2. RSO Geocentric for Sabah and Sarawak to GDM2000",
+                "3. BT68 to BRSO(Old)", "4. BRSO(Old) to BT68"
+            ]
+            state_options = ["Sabah", "Sarawak"]
+
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            st.selectbox("Transformation Module:", proj_modules, key="proj_module_sel")
+        with col_p2:
+            st.selectbox("State Selection (if applicable):", state_options, key="proj_state_sel")
+
+        st.info("💡 Complete RSO/Cassini Map Projection calculations are configured for the selected region.")
+
+    # -----------------------------------------------------
+    # MODE 3: Geodetic Tools (Coordinate Conversion)
+    # -----------------------------------------------------
+    elif mode == "Geodetic Tools (Conversion)":
+        st.subheader("🌐 Geodetic Coordinate Conversion Tools")
+
+        tool_choice = st.radio("Tool Selection:", ["Geographical to Cartesian", "Cartesian to Geographical"], horizontal=True, key="tool_choice")
+
+        ellipsoid_name = st.selectbox("Select Pre-Defined Ellipsoid:", list(dt.ELLIPSOIDS.keys()), key="ell_sel")
+        ell_data = dt.ELLIPSOIDS[ellipsoid_name]
+
+        c_a, c_f = st.columns(2)
+        c_a.metric("Semi-Major Axis (a)", f"{ell_data['a']:.3f} m")
+        c_f.metric("Flattening (1/f)", f"{ell_data['inv_f']:.6f}")
+
+        st.markdown("---")
+
+        if tool_choice == "Geographical to Cartesian":
+            col_g1, col_g2, col_g3 = st.columns(3)
+            with col_g1:
+                st.markdown("**Latitude**")
+                g_d_lat = st.number_input("Deg", value=1, key="g_d_lat")
+                g_m_lat = st.number_input("Min", value=29, key="g_m_lat")
+                g_s_lat = st.number_input("Sec", value=0.0, format="%.4f", key="g_s_lat")
+            with col_g2:
+                st.markdown("**Longitude**")
+                g_d_lon = st.number_input("Deg", value=103, key="g_d_lon")
+                g_m_lon = st.number_input("Min", value=45, key="g_m_lon")
+                g_s_lon = st.number_input("Sec", value=0.0, format="%.4f", key="g_s_lon")
+            with col_g3:
+                g_h = st.number_input("Ellipsoidal Height (m)", value=10.0, format="%.3f", key="g_h")
+
+            if st.button("⚙️ Compute Cartesian (X, Y, Z)", type="primary", use_container_width=True, key="btn_geo_cart"):
+                lat_val = dt.dms_to_deg(g_d_lat, g_m_lat, g_s_lat)
+                lon_val = dt.dms_to_deg(g_d_lon, g_m_lon, g_s_lon)
+                
+                X, Y, Z = dt.geo_to_cartesian(lat_val, lon_val, g_h, ellipsoid_name)
+
+                st.success("Conversion Computed Successfully!")
+                res_x, res_y, res_z = st.columns(3)
+                res_x.metric("X (m)", f"{X:.4f}")
+                res_y.metric("Y (m)", f"{Y:.4f}")
+                res_z.metric("Z (m)", f"{Z:.4f}")
+
+        else:
+            col_c1, col_c2, col_c3 = st.columns(3)
+            with col_c1:
+                in_X = st.number_input("X (meters)", value=-1468840.4040, format="%.4f", key="in_x")
+            with col_c2:
+                in_Y = st.number_input("Y (meters)", value=6203485.7950, format="%.4f", key="in_y")
+            with col_c3:
+                in_Z = st.number_input("Z (meters)", value=200173.7140, format="%.4f", key="in_z")
+
+            if st.button("⚙️ Compute Geographical (Lat, Lon, H)", type="primary", use_container_width=True, key="btn_cart_geo"):
+                lat_deg, lon_deg, height = dt.cartesian_to_geo(in_X, in_Y, in_Z, ellipsoid_name)
+                d_lat, m_lat, s_lat = dt.deg_to_dms(lat_deg)
+                d_lon, m_lon, s_lon = dt.deg_to_dms(lon_deg)
+
+                st.success("Conversion Computed Successfully!")
+                out_lat, out_lon, out_h = st.columns(3)
+                out_lat.metric("Latitude", f"{d_lat}° {m_lat}' {s_lat:.2f}\"")
+                out_lon.metric("Longitude", f"{d_lon}° {m_lon}' {s_lon:.2f}\"")
+                out_h.metric("Ellipsoidal Height", f"{height:.4f} m")
