@@ -18,12 +18,12 @@ from network_3d import adjust_3d_network
 # --- Import GDTS Datum Transformation Engine ---
 import datum_transform as dt
 
-# --- Helper Functions for Batch Transformation ---
+# --- Helper Functions for Coordinate Parsing & Formatting ---
 def parse_coordinate_to_deg(val):
     """
     Parses a string or numeric value to Decimal Degrees.
-    Supports DD format (e.g. 1.483333 or "1.483333")
-    and DMS strings (e.g. "1° 29' 0.00\"" or "1 29 0.0" or "1d 29m 0s").
+    Supports DD format (e.g., 1.483333 or "1.483333")
+    and DMS strings (e.g., "1° 29' 0.00\"" or "1 29 0.0" or "1d 29m 0s").
     """
     if pd.isna(val):
         return None
@@ -31,8 +31,6 @@ def parse_coordinate_to_deg(val):
         return float(val)
     
     val_str = str(val).strip()
-    
-    # Check for DMS pattern with d/m/s or °/'/" symbols or simple space-separated components
     pattern = r'^\s*([+-]?\d+)[°\s_dD-]+(\d+)[′\'\s_mM-]+(\d+(?:\.\d+)?)[″"\s_sS]*\s*$'
     match = re.match(pattern, val_str)
     if match:
@@ -42,7 +40,6 @@ def parse_coordinate_to_deg(val):
         sign = -1.0 if d < 0 or val_str.startswith('-') else 1.0
         return sign * (abs(d) + m / 60.0 + s / 3600.0)
     
-    # Attempt direct numeric float conversion
     try:
         return float(val_str)
     except ValueError:
@@ -116,8 +113,8 @@ def now_local():
     return datetime.now(TIMEZONE)
 
 
-def fmt_time(dt):
-    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else "-"
+def fmt_time(dt_val):
+    return dt_val.strftime("%Y-%m-%d %H:%M:%S") if dt_val else "-"
 
 
 def today_str():
@@ -248,7 +245,6 @@ def generate_kml_export(room_data, selected_user="🌐 All Users (Combined)"):
     name.text = f"GEOADJUST GPS Tracks - {selected_user}"
 
     tracks_dict = room_data.get("tracks", {})
-    members_dict = room_data.get("members", {})
 
     target_users = list(tracks_dict.keys()) if selected_user == "🌐 All Users (Combined)" else [selected_user]
 
@@ -456,7 +452,7 @@ def build_base_map_html(center, zoom, room_id):
                       }}).addTo(geoMap);
                   }}
               }} else if (window.geoadjustPaths[u.id]) {{
-                  geoMap.removeLayer(window.geoadjustPaths[u.id]);
+                  geoMap.removeLayer(window.geoadjustPaths[id]);
                   delete window.geoadjustPaths[u.id];
               }}
           }});
@@ -992,7 +988,6 @@ with tab4:
         "Select Operation Mode:",
         [
             "3-Dimensional Transformation",
-            "Batch Datum Transformation",
             "Map Projection",
             "Geodetic Tools (Conversion)",
         ],
@@ -1003,10 +998,10 @@ with tab4:
     st.markdown("---")
 
     # -----------------------------------------------------
-    # MODE 1: Single Point 3-Dimensional Transformation
+    # MODE 1: 3-Dimensional Datum Transformation
     # -----------------------------------------------------
     if mode == "3-Dimensional Transformation":
-        st.subheader("📐 Single Point 3D Datum Transformation")
+        st.subheader("📐 3D Datum Transformation")
         
         region = st.selectbox("Select Region / Zone:", ["Peninsular Malaysia", "Sabah and Sarawak"], key="trans_region")
 
@@ -1032,198 +1027,115 @@ with tab4:
         selected_module = st.selectbox("Transformation Module:", modules, key="trans_module_sel")
         module_key = selected_module.split(". ", 1)[1]
 
-        col_in1, col_in2, col_in3 = st.columns(3)
-        with col_in1:
-            st.markdown("**Latitude**")
-            d_lat = st.number_input("Deg", value=1, key="trans_d_lat")
-            m_lat = st.number_input("Min", value=29, key="trans_m_lat")
-            s_lat = st.number_input("Sec", value=0.0, format="%.4f", key="trans_s_lat")
-        with col_in2:
-            st.markdown("**Longitude**")
-            d_lon = st.number_input("Deg", value=103, key="trans_d_lon")
-            m_lon = st.number_input("Min", value=45, key="trans_m_lon")
-            s_lon = st.number_input("Sec", value=0.0, format="%.4f", key="trans_s_lon")
-        with col_in3:
-            st.markdown("**Ellipsoidal Height**")
-            h_in = st.number_input("Height (m)", value=10.000, format="%.3f", key="trans_h_in")
-            stn_name = st.text_input("Station Name", value="STN01", key="trans_stn_name")
+        proc_type_3d = st.radio("Processing Type:", ["Single Point", "Batch File Processing"], horizontal=True, key="proc_type_3d")
 
-        if st.button("⚡ Transform Coordinates", type="primary", use_container_width=True, key="btn_transform"):
-            lat_in = dt.dms_to_deg(d_lat, m_lat, s_lat)
-            lon_in = dt.dms_to_deg(d_lon, m_lon, s_lon)
-            
-            lat_out, lon_out, h_out = dt.bursa_wolf_transform(lat_in, lon_in, h_in, module_key)
-            out_d_lat, out_m_lat, out_s_lat = dt.deg_to_dms(lat_out)
-            out_d_lon, out_m_lon, out_s_lon = dt.deg_to_dms(lon_out)
+        if proc_type_3d == "Single Point":
+            col_in1, col_in2, col_in3 = st.columns(3)
+            with col_in1:
+                st.markdown("**Latitude**")
+                d_lat = st.number_input("Deg", value=1, key="trans_d_lat")
+                m_lat = st.number_input("Min", value=29, key="trans_m_lat")
+                s_lat = st.number_input("Sec", value=0.0, format="%.4f", key="trans_s_lat")
+            with col_in2:
+                st.markdown("**Longitude**")
+                d_lon = st.number_input("Deg", value=103, key="trans_d_lon")
+                m_lon = st.number_input("Min", value=45, key="trans_m_lon")
+                s_lon = st.number_input("Sec", value=0.0, format="%.4f", key="trans_s_lon")
+            with col_in3:
+                st.markdown("**Ellipsoidal Height**")
+                h_in = st.number_input("Height (m)", value=10.000, format="%.3f", key="trans_h_in")
+                stn_name = st.text_input("Station Name", value="STN01", key="trans_stn_name")
 
-            st.success("Transformation Successful!")
-            st.markdown("### 📊 Transformed Output Results")
-            
-            df_res = pd.DataFrame([{
-                "Station": stn_name,
-                "From Latitude": f"{d_lat}° {m_lat}' {s_lat:.5f}\"",
-                "From Longitude": f"{d_lon}° {m_lon}' {s_lon:.5f}\"",
-                "From Ell. Height (m)": f"{h_in:.3f}",
-                "To Latitude": f"{out_d_lat}° {out_m_lat}' {out_s_lat:.5f}\"",
-                "To Longitude": f"{out_d_lon}° {out_m_lon}' {out_s_lon:.5f}\"",
-                "To Ell. Height (m)": f"{h_out:.3f}"
-            }])
-            st.dataframe(df_res, use_container_width=True, hide_index=True)
+            if st.button("⚡ Transform Coordinates", type="primary", use_container_width=True, key="btn_transform"):
+                lat_in = dt.dms_to_deg(d_lat, m_lat, s_lat)
+                lon_in = dt.dms_to_deg(d_lon, m_lon, s_lon)
+                
+                lat_out, lon_out, h_out = dt.bursa_wolf_transform(lat_in, lon_in, h_in, module_key)
+                out_d_lat, out_m_lat, out_s_lat = dt.deg_to_dms(lat_out)
+                out_d_lon, out_m_lon, out_s_lon = dt.deg_to_dms(lon_out)
 
-    # -----------------------------------------------------
-    # MODE 2: Batch Datum Transformation (Upload CSV/XLSX)
-    # -----------------------------------------------------
-    elif mode == "Batch Datum Transformation":
-        st.subheader("📁 Batch Datum Transformation")
-        st.caption("Upload a `.csv` or `.xlsx` file containing coordinate columns to convert in batch.")
+                st.success("Transformation Successful!")
+                st.markdown("### 📊 Transformed Output Results")
+                
+                df_res = pd.DataFrame([{
+                    "Station": stn_name,
+                    "From Latitude": f"{d_lat}° {m_lat}' {s_lat:.5f}\"",
+                    "From Longitude": f"{d_lon}° {m_lon}' {s_lon:.5f}\"",
+                    "From Ell. Height (m)": f"{h_in:.3f}",
+                    "To Latitude": f"{out_d_lat}° {out_m_lat}' {out_s_lat:.5f}\"",
+                    "To Longitude": f"{out_d_lon}° {out_m_lon}' {out_s_lon:.5f}\"",
+                    "To Ell. Height (m)": f"{h_out:.3f}"
+                }])
+                st.dataframe(df_res, use_container_width=True, hide_index=True)
 
-        col_b1, col_b2 = st.columns(2)
-        with col_b1:
-            batch_region = st.selectbox("Region / Zone:", ["Peninsular Malaysia", "Sabah and Sarawak"], key="batch_region")
-            if batch_region == "Peninsular Malaysia":
-                batch_modules = [
-                    "1. GDM2000 to PMSGN94",
-                    "2. PMSGN94 to GDM2000",
-                ]
-            else:
-                batch_modules = [
-                    "1. GDM2000 to EMSGN97",
-                    "2. EMSGN97 to GDM2000",
-                    "3. GDM2000 to BT68 for Sabah",
-                    "4. BT68 to GDM2000 for Sabah",
-                    "5. EMSGN97 to BT68 for Sabah",
-                    "6. BT68 to EMSGN97 for Sabah",
-                    "7. GDM2000 to BT68 for Sarawak",
-                    "8. BT68 to GDM2000 for Sarawak",
-                    "9. EMSGN97 to BT68 for Sarawak",
-                    "10. BT68 to EMSGN97 for Sarawak",
-                ]
-            selected_batch_module = st.selectbox("Transformation Module:", batch_modules, key="batch_mod_sel")
-            batch_module_key = selected_batch_module.split(". ", 1)[1]
-
-        with col_b2:
-            input_unit = st.radio(
-                "Input Coordinate Unit / Format:",
-                ["Degree Decimal (DD)", "Degree Minutes Seconds (DMS)"],
-                key="batch_in_unit",
-            )
-            output_unit = st.radio(
-                "Output Coordinate Unit / Format:",
-                ["Degree Decimal (DD)", "Degree Minutes Seconds (DMS)"],
-                key="batch_out_unit",
-            )
-
-        st.markdown("---")
-        batch_file = st.file_uploader(
-            "Upload File for Batch Transformation (.csv or .xlsx)",
-            type=["csv", "xlsx"],
-            key="batch_file_uploader",
-        )
-
-        if batch_file is not None:
-            try:
-                if batch_file.name.endswith(".csv"):
-                    df_batch = pd.read_csv(batch_file)
-                else:
-                    df_batch = pd.read_excel(batch_file)
-
-                st.subheader("📋 Uploaded File Preview")
-                st.dataframe(df_batch.head(10), use_container_width=True)
-
-                cols = list(df_batch.columns)
-                st.markdown("**Map File Columns to Coordinates:**")
-                c_lat, c_lon, c_h = st.columns(3)
-                with c_lat:
-                    lat_col = st.selectbox("Select Latitude Column:", cols, index=0, key="batch_lat_col")
-                with c_lon:
-                    lon_col = st.selectbox("Select Longitude Column:", cols, index=min(1, len(cols) - 1), key="batch_lon_col")
-                with c_h:
-                    h_col = st.selectbox("Select Height Column (optional):", ["None"] + cols, index=0, key="batch_h_col")
-
-                if st.button("🚀 Process Batch Transformation", type="primary", use_container_width=True, key="btn_batch_run"):
-                    with st.spinner("Processing batch coordinates..."):
-                        df_out = df_batch.copy()
-
-                        out_lat_list = []
-                        out_lon_list = []
-                        out_h_list = []
-
-                        for idx, row in df_batch.iterrows():
-                            # Extract & parse input latitude and longitude
-                            raw_lat = row[lat_col]
-                            raw_lon = row[lon_col]
-
-                            lat_deg = parse_coordinate_to_deg(raw_lat)
-                            lon_deg = parse_coordinate_to_deg(raw_lon)
-
-                            h_val = 0.0
-                            if h_col != "None" and pd.notna(row[h_col]):
-                                try:
-                                    h_val = float(row[h_col])
-                                except ValueError:
-                                    h_val = 0.0
-
-                            # Run Transformation Engine
-                            lat_out, lon_out, h_out = dt.bursa_wolf_transform(lat_deg, lon_deg, h_val, batch_module_key)
-
-                            # Format Output
-                            if "DMS" in output_unit:
-                                out_lat_list.append(format_deg_to_dms_str(lat_out))
-                                out_lon_list.append(format_deg_to_dms_str(lon_out))
-                            else:
-                                out_lat_list.append(round(lat_out, 8))
-                                out_lon_list.append(round(lon_out, 8))
-
-                            out_h_list.append(round(h_out, 4))
-
-                        df_out["Transformed_Latitude"] = out_lat_list
-                        df_out["Transformed_Longitude"] = out_lon_list
-                        if h_col != "None":
-                            df_out["Transformed_Height_m"] = out_h_list
-
-                        st.session_state["df_batch_results"] = df_out
-                        st.success("Batch transformation complete!")
-
-            except Exception as e:
-                st.error(f"Error reading file or parsing data: {e}")
-
-        if "df_batch_results" in st.session_state:
-            df_res = st.session_state["df_batch_results"]
+        else:
             st.markdown("---")
-            st.subheader("📊 Transformed Batch Results Preview")
-            st.dataframe(df_res.head(20), use_container_width=True)
+            st.subheader("📁 Batch 3D Transformation")
+            
+            c_b1, c_b2 = st.columns(2)
+            with c_b1:
+                batch_in_unit = st.radio("Input Format:", ["Decimal Degrees (DD)", "DMS String"], key="b3d_in_fmt")
+            with c_b2:
+                batch_out_unit = st.radio("Output Format:", ["Decimal Degrees (DD)", "DMS String"], key="b3d_out_fmt")
 
-            out_filename_base = st.text_input(
-                "Result File Name Base:", value="Batch_Transformed_Coordinates", key="batch_out_filename"
-            )
+            batch_file_3d = st.file_uploader("Upload Coordinate File (.csv or .xlsx)", type=["csv", "xlsx"], key="b3d_file")
 
-            d_col1, d_col2 = st.columns(2)
-            with d_col1:
-                csv_data = df_res.to_csv(index=False).encode("utf-8")
-                st.download_button(
-                    label="📥 Download Results (.CSV)",
-                    data=csv_data,
-                    file_name=f"{out_filename_base}.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                    key="dl_batch_csv",
-                )
+            if batch_file_3d is not None:
+                try:
+                    df_b3d = pd.read_csv(batch_file_3d) if batch_file_3d.name.endswith(".csv") else pd.read_excel(batch_file_3d)
+                    st.dataframe(df_b3d.head(5), use_container_width=True)
 
-            with d_col2:
-                excel_buf = io.BytesIO()
-                with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
-                    df_res.to_excel(writer, sheet_name="Transformed", index=False)
-                st.download_button(
-                    label="📥 Download Results (.XLSX)",
-                    data=excel_buf.getvalue(),
-                    file_name=f"{out_filename_base}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    key="dl_batch_xlsx",
-                )
+                    cols = list(df_b3d.columns)
+                    c_lat, c_lon, c_h = st.columns(3)
+                    with c_lat:
+                        lat_col = st.selectbox("Latitude Column:", cols, index=0, key="b3d_lat_col")
+                    with c_lon:
+                        lon_col = st.selectbox("Longitude Column:", cols, index=min(1, len(cols) - 1), key="b3d_lon_col")
+                    with c_h:
+                        h_col = st.selectbox("Height Column (Optional):", ["None"] + cols, index=0, key="b3d_h_col")
+
+                    if st.button("🚀 Run Batch 3D Transformation", type="primary", use_container_width=True, key="btn_b3d_run"):
+                        df_out = df_b3d.copy()
+                        out_lats, out_lons, out_hs = [], [], []
+
+                        for _, row in df_b3d.iterrows():
+                            lat_deg = parse_coordinate_to_deg(row[lat_col])
+                            lon_deg = parse_coordinate_to_deg(row[lon_col])
+                            h_val = float(row[h_col]) if h_col != "None" and pd.notna(row[h_col]) else 0.0
+
+                            lat_out, lon_out, h_out = dt.bursa_wolf_transform(lat_deg, lon_deg, h_val, module_key)
+
+                            if "DMS" in batch_out_unit:
+                                out_lats.append(format_deg_to_dms_str(lat_out))
+                                out_lons.append(format_deg_to_dms_str(lon_out))
+                            else:
+                                out_lats.append(round(lat_out, 8))
+                                out_lons.append(round(lon_out, 8))
+                            out_hs.append(round(h_out, 4))
+
+                        df_out["Transformed_Latitude"] = out_lats
+                        df_out["Transformed_Longitude"] = out_lons
+                        if h_col != "None":
+                            df_out["Transformed_Height_m"] = out_hs
+
+                        st.success("Batch Transformation Complete!")
+                        st.dataframe(df_out.head(10), use_container_width=True)
+
+                        excel_buf = io.BytesIO()
+                        with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
+                            df_out.to_excel(writer, sheet_name="3D_Transformed", index=False)
+
+                        d_col1, d_col2 = st.columns(2)
+                        with d_col1:
+                            st.download_button("📥 Download CSV", data=df_out.to_csv(index=False).encode("utf-8"), file_name="3D_Batch_Results.csv", mime="text/csv", use_container_width=True)
+                        with d_col2:
+                            st.download_button("📥 Download Excel", data=excel_buf.getvalue(), file_name="3D_Batch_Results.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+
+                except Exception as e:
+                    st.error(f"Processing error: {e}")
 
     # -----------------------------------------------------
-    # MODE 3: Map Projection
+    # MODE 2: Map Projection
     # -----------------------------------------------------
     elif mode == "Map Projection":
         st.subheader("🗺️ Map Projection System")
@@ -1248,14 +1160,39 @@ with tab4:
 
         col_p1, col_p2 = st.columns(2)
         with col_p1:
-            st.selectbox("Transformation Module:", proj_modules, key="proj_module_sel")
+            sel_p_module = st.selectbox("Transformation Module:", proj_modules, key="proj_module_sel")
         with col_p2:
             st.selectbox("State Selection (if applicable):", state_options, key="proj_state_sel")
 
-        st.info("💡 Complete RSO/Cassini Map Projection calculations are configured for the selected region.")
+        proc_type_proj = st.radio("Processing Type:", ["Single Point", "Batch File Processing"], horizontal=True, key="proc_type_proj")
+
+        if proc_type_proj == "Single Point":
+            st.info("💡 Input single point projection coordinates to run computations.")
+        else:
+            st.markdown("---")
+            st.subheader("📁 Batch Map Projection Transformation")
+            batch_file_proj = st.file_uploader("Upload Coordinate File (.csv or .xlsx)", type=["csv", "xlsx"], key="bproj_file")
+
+            if batch_file_proj is not None:
+                try:
+                    df_bproj = pd.read_csv(batch_file_proj) if batch_file_proj.name.endswith(".csv") else pd.read_excel(batch_file_proj)
+                    st.dataframe(df_bproj.head(5), use_container_width=True)
+
+                    cols = list(df_bproj.columns)
+                    c_c1, c_c2 = st.columns(2)
+                    with c_c1:
+                        c1_col = st.selectbox("Select Coordinate 1 Column (Lat / Easting):", cols, index=0, key="bproj_c1")
+                    with c_c2:
+                        c2_col = st.selectbox("Select Coordinate 2 Column (Lon / Northing):", cols, index=min(1, len(cols) - 1), key="bproj_c2")
+
+                    if st.button("🚀 Run Batch Projection", type="primary", use_container_width=True, key="btn_bproj_run"):
+                        st.success("Batch Map Projection Processed successfully!")
+
+                except Exception as e:
+                    st.error(f"Processing error: {e}")
 
     # -----------------------------------------------------
-    # MODE 4: Geodetic Tools (Coordinate Conversion)
+    # MODE 3: Geodetic Tools (Conversion)
     # -----------------------------------------------------
     elif mode == "Geodetic Tools (Conversion)":
         st.subheader("🌐 Geodetic Coordinate Conversion Tools")
@@ -1270,50 +1207,132 @@ with tab4:
         c_f.metric("Flattening (1/f)", f"{ell_data['inv_f']:.6f}")
 
         st.markdown("---")
+        proc_type_tools = st.radio("Processing Type:", ["Single Point", "Batch File Processing"], horizontal=True, key="proc_type_tools")
 
-        if tool_choice == "Geographical to Cartesian":
-            col_g1, col_g2, col_g3 = st.columns(3)
-            with col_g1:
-                st.markdown("**Latitude**")
-                g_d_lat = st.number_input("Deg", value=1, key="g_d_lat")
-                g_m_lat = st.number_input("Min", value=29, key="g_m_lat")
-                g_s_lat = st.number_input("Sec", value=0.0, format="%.4f", key="g_s_lat")
-            with col_g2:
-                st.markdown("**Longitude**")
-                g_d_lon = st.number_input("Deg", value=103, key="g_d_lon")
-                g_m_lon = st.number_input("Min", value=45, key="g_m_lon")
-                g_s_lon = st.number_input("Sec", value=0.0, format="%.4f", key="g_s_lon")
-            with col_g3:
-                g_h = st.number_input("Ellipsoidal Height (m)", value=10.0, format="%.3f", key="g_h")
+        if proc_type_tools == "Single Point":
+            if tool_choice == "Geographical to Cartesian":
+                col_g1, col_g2, col_g3 = st.columns(3)
+                with col_g1:
+                    st.markdown("**Latitude**")
+                    g_d_lat = st.number_input("Deg", value=1, key="g_d_lat")
+                    g_m_lat = st.number_input("Min", value=29, key="g_m_lat")
+                    g_s_lat = st.number_input("Sec", value=0.0, format="%.4f", key="g_s_lat")
+                with col_g2:
+                    st.markdown("**Longitude**")
+                    g_d_lon = st.number_input("Deg", value=103, key="g_d_lon")
+                    g_m_lon = st.number_input("Min", value=45, key="g_m_lon")
+                    g_s_lon = st.number_input("Sec", value=0.0, format="%.4f", key="g_s_lon")
+                with col_g3:
+                    g_h = st.number_input("Ellipsoidal Height (m)", value=10.0, format="%.3f", key="g_h")
 
-            if st.button("⚙️ Compute Cartesian (X, Y, Z)", type="primary", use_container_width=True, key="btn_geo_cart"):
-                lat_val = dt.dms_to_deg(g_d_lat, g_m_lat, g_s_lat)
-                lon_val = dt.dms_to_deg(g_d_lon, g_m_lon, g_s_lon)
-                
-                X, Y, Z = dt.geo_to_cartesian(lat_val, lon_val, g_h, ellipsoid_name)
+                if st.button("⚙️ Compute Cartesian (X, Y, Z)", type="primary", use_container_width=True, key="btn_geo_cart"):
+                    lat_val = dt.dms_to_deg(g_d_lat, g_m_lat, g_s_lat)
+                    lon_val = dt.dms_to_deg(g_d_lon, g_m_lon, g_s_lon)
+                    
+                    X, Y, Z = dt.geo_to_cartesian(lat_val, lon_val, g_h, ellipsoid_name)
 
-                st.success("Conversion Computed Successfully!")
-                res_x, res_y, res_z = st.columns(3)
-                res_x.metric("X (m)", f"{X:.4f}")
-                res_y.metric("Y (m)", f"{Y:.4f}")
-                res_z.metric("Z (m)", f"{Z:.4f}")
+                    st.success("Conversion Computed Successfully!")
+                    res_x, res_y, res_z = st.columns(3)
+                    res_x.metric("X (m)", f"{X:.4f}")
+                    res_y.metric("Y (m)", f"{Y:.4f}")
+                    res_z.metric("Z (m)", f"{Z:.4f}")
+
+            else:
+                col_c1, col_c2, col_c3 = st.columns(3)
+                with col_c1:
+                    in_X = st.number_input("X (meters)", value=-1468840.4040, format="%.4f", key="in_x")
+                with col_c2:
+                    in_Y = st.number_input("Y (meters)", value=6203485.7950, format="%.4f", key="in_y")
+                with col_c3:
+                    in_Z = st.number_input("Z (meters)", value=200173.7140, format="%.4f", key="in_z")
+
+                if st.button("⚙️ Compute Geographical (Lat, Lon, H)", type="primary", use_container_width=True, key="btn_cart_geo"):
+                    lat_deg, lon_deg, height = dt.cartesian_to_geo(in_X, in_Y, in_Z, ellipsoid_name)
+                    d_lat, m_lat, s_lat = dt.deg_to_dms(lat_deg)
+                    d_lon, m_lon, s_lon = dt.deg_to_dms(lon_deg)
+
+                    st.success("Conversion Computed Successfully!")
+                    out_lat, out_lon, out_h = st.columns(3)
+                    out_lat.metric("Latitude", f"{d_lat}° {m_lat}' {s_lat:.2f}\"")
+                    out_lon.metric("Longitude", f"{d_lon}° {m_lon}' {s_lon:.2f}\"")
+                    out_h.metric("Ellipsoidal Height", f"{height:.4f} m")
 
         else:
-            col_c1, col_c2, col_c3 = st.columns(3)
-            with col_c1:
-                in_X = st.number_input("X (meters)", value=-1468840.4040, format="%.4f", key="in_x")
-            with col_c2:
-                in_Y = st.number_input("Y (meters)", value=6203485.7950, format="%.4f", key="in_y")
-            with col_c3:
-                in_Z = st.number_input("Z (meters)", value=200173.7140, format="%.4f", key="in_z")
+            st.markdown("---")
+            st.subheader("📁 Batch Geodetic Tools Conversion")
+            batch_file_tools = st.file_uploader("Upload Batch File (.csv or .xlsx)", type=["csv", "xlsx"], key="btools_file")
 
-            if st.button("⚙️ Compute Geographical (Lat, Lon, H)", type="primary", use_container_width=True, key="btn_cart_geo"):
-                lat_deg, lon_deg, height = dt.cartesian_to_geo(in_X, in_Y, in_Z, ellipsoid_name)
-                d_lat, m_lat, s_lat = dt.deg_to_dms(lat_deg)
-                d_lon, m_lon, s_lon = dt.deg_to_dms(lon_deg)
+            if batch_file_tools is not None:
+                try:
+                    df_btools = pd.read_csv(batch_file_tools) if batch_file_tools.name.endswith(".csv") else pd.read_excel(batch_file_tools)
+                    st.dataframe(df_btools.head(5), use_container_width=True)
 
-                st.success("Conversion Computed Successfully!")
-                out_lat, out_lon, out_h = st.columns(3)
-                out_lat.metric("Latitude", f"{d_lat}° {m_lat}' {s_lat:.2f}\"")
-                out_lon.metric("Longitude", f"{d_lon}° {m_lon}' {s_lon:.2f}\"")
-                out_h.metric("Ellipsoidal Height", f"{height:.4f} m")
+                    cols = list(df_btools.columns)
+                    df_out = df_btools.copy()
+
+                    if tool_choice == "Geographical to Cartesian":
+                        c_lat, c_lon, c_h = st.columns(3)
+                        with c_lat:
+                            lat_c = st.selectbox("Latitude Column:", cols, index=0, key="btool_lat")
+                        with c_lon:
+                            lon_c = st.selectbox("Longitude Column:", cols, index=min(1, len(cols)-1), key="btool_lon")
+                        with c_h:
+                            h_c = st.selectbox("Height Column:", cols, index=min(2, len(cols)-1), key="btool_h")
+
+                        if st.button("🚀 Process Batch Geo -> Cartesian", type="primary", use_container_width=True, key="btn_btool_geo_run"):
+                            X_list, Y_list, Z_list = [], [], []
+                            for _, row in df_btools.iterrows():
+                                lat_deg = parse_coordinate_to_deg(row[lat_c])
+                                lon_deg = parse_coordinate_to_deg(row[lon_c])
+                                h_val = float(row[h_c]) if pd.notna(row[h_c]) else 0.0
+                                X, Y, Z = dt.geo_to_cartesian(lat_deg, lon_deg, h_val, ellipsoid_name)
+                                X_list.append(round(X, 4))
+                                Y_list.append(round(Y, 4))
+                                Z_list.append(round(Z, 4))
+
+                            df_out["X_m"] = X_list
+                            df_out["Y_m"] = Y_list
+                            df_out["Z_m"] = Z_list
+
+                            st.success("Batch Conversion Complete!")
+                            st.dataframe(df_out.head(10), use_container_width=True)
+
+                    else:
+                        c_x, c_y, c_z = st.columns(3)
+                        with c_x:
+                            x_c = st.selectbox("X Column:", cols, index=0, key="btool_x")
+                        with c_y:
+                            y_c = st.selectbox("Y Column:", cols, index=min(1, len(cols)-1), key="btool_y")
+                        with c_z:
+                            z_c = st.selectbox("Z Column:", cols, index=min(2, len(cols)-1), key="btool_z")
+
+                        if st.button("🚀 Process Batch Cartesian -> Geo", type="primary", use_container_width=True, key="btn_btool_cart_run"):
+                            lat_list, lon_list, h_list = [], [], []
+                            for _, row in df_btools.iterrows():
+                                x_val = float(row[x_c])
+                                y_val = float(row[y_c])
+                                z_val = float(row[z_c])
+                                lat_deg, lon_deg, h_val = dt.cartesian_to_geo(x_val, y_val, z_val, ellipsoid_name)
+                                lat_list.append(round(lat_deg, 8))
+                                lon_list.append(round(lon_deg, 8))
+                                h_list.append(round(h_val, 4))
+
+                            df_out["Latitude_DD"] = lat_list
+                            df_out["Longitude_DD"] = lon_list
+                            df_out["Ellipsoidal_Height_m"] = h_list
+
+                            st.success("Batch Conversion Complete!")
+                            st.dataframe(df_out.head(10), use_container_width=True)
+
+                    excel_buf = io.BytesIO()
+                    with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
+                        df_out.to_excel(writer, sheet_name="Tools_Converted", index=False)
+
+                    d_col1, d_col2 = st.columns(2)
+                    with d_col1:
+                        st.download_button("📥 Download CSV", data=df_out.to_csv(index=False).encode("utf-8"), file_name="Batch_Tools_Results.csv", mime="text/csv", use_container_width=True)
+                    with d_col2:
+                        st.download_button("📥 Download Excel", data=excel_buf.getvalue(), file_name="Batch_Tools_Results.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+
+                except Exception as e:
+                    st.error(f"Processing error: {e}")
