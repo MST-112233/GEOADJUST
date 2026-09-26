@@ -970,17 +970,25 @@ with tab4:
 
         if region == "Peninsular Malaysia":
             modules = [
-                "1. GDM2000 to PMSGN94", "2. PMSGN94 to GDM2000",
-                "3. GDM2000 to MRT48", "4. MRT48 to GDM2000",
-                "5. PMSGN94 to MRT48", "6. MRT48 to PMSGN94"
+                "1. GDM2000 to PMSGN94", 
+                "2. PMSGN94 to GDM2000",
+                #"3. GDM2000 to MRT48", 
+                #"4. MRT48 to GDM2000",
+                #"5. PMSGN94 to MRT48", 
+                #"6. MRT48 to PMSGN94"
             ]
         else:
             modules = [
-                "1. GDM2000 to EMSGN97", "2. EMSGN97 to GDM2000",
-                "3. GDM2000 to BT68 for Sabah", "4. BT68 to GDM2000 for Sabah",
-                "5. EMSGN97 to BT68 for Sabah", "6. BT68 to EMSGN97 for Sabah",
-                "7. GDM2000 to BT68 for Sarawak", "8. BT68 to GDM2000 for Sarawak",
-                "9. EMSGN97 to BT68 for Sarawak", "10. BT68 to EMSGN97 for Sarawak"
+                "1. GDM2000 to EMSGN97", 
+                "2. EMSGN97 to GDM2000",
+                "3. GDM2000 to BT68 for Sabah", 
+                "4. BT68 to GDM2000 for Sabah",
+                "5. EMSGN97 to BT68 for Sabah", 
+                "6. BT68 to EMSGN97 for Sabah",
+                "7. GDM2000 to BT68 for Sarawak", 
+                "8. BT68 to GDM2000 for Sarawak",
+                "9. EMSGN97 to BT68 for Sarawak", 
+                "10. BT68 to EMSGN97 for Sarawak"
             ]
 
         selected_module = st.selectbox("Transformation Module:", modules, key="trans_module_sel")
@@ -1015,11 +1023,11 @@ with tab4:
             
             df_res = pd.DataFrame([{
                 "Station": stn_name,
-                "From Latitude": f"{d_lat}° {m_lat}' {s_lat:.2f}\"",
-                "From Longitude": f"{d_lon}° {m_lon}' {s_lon:.2f}\"",
+                "From Latitude": f"{d_lat}° {m_lat}' {s_lat:.5f}\"",
+                "From Longitude": f"{d_lon}° {m_lon}' {s_lon:.5f}\"",
                 "From Ell. Height (m)": f"{h_in:.3f}",
-                "To Latitude": f"{out_d_lat}° {out_m_lat}' {out_s_lat:.2f}\"",
-                "To Longitude": f"{out_d_lon}° {out_m_lon}' {out_s_lon:.2f}\"",
+                "To Latitude": f"{out_d_lat}° {out_m_lat}' {out_s_lat:.5f}\"",
+                "To Longitude": f"{out_d_lon}° {out_m_lon}' {out_s_lon:.5f}\"",
                 "To Ell. Height (m)": f"{h_out:.3f}"
             }])
             st.dataframe(df_res, use_container_width=True, hide_index=True)
@@ -1037,15 +1045,18 @@ with tab4:
                 "2. RSO Geocentric for Peninsular to GDM2000",
                 "3. GDM2000 to Cassini-Soldner Geocentric",
                 "4. Cassini-Soldner Geocentric to GDM2000",
-                "5. MRT48 to MRSO(Old)", "6. MRSO(Old) to MRT48",
-                "7. MRSO(Old) to Cassini-Soldner(Old)", "8. Cassini-Soldner(Old) to MRSO(Old)"
+                #"5. MRT48 to MRSO(Old)", 
+                #"6. MRSO(Old) to MRT48",
+                #"7. MRSO(Old) to Cassini-Soldner(Old)", 
+                #"8. Cassini-Soldner(Old) to MRSO(Old)"
             ]
-            state_options = ["Johor", "Kedah", "Kelantan", "Melaka", "Negeri Sembilan", "Pahang", "Penang", "Perak", "Perlis", "Selangor", "Terengganu"]
+            state_options = ["Johor", "Kedah & Perlis", "Kelantan", "N.Sembilan & Melaka", "Pahang", "Perak", "Pulau Pinang", "Selangor & Kuala Lumpur", "Terengganu"]
         else:
             proj_modules = [
                 "1. GDM2000 to RSO Geocentric (Sabah and Sarawak)",
                 "2. RSO Geocentric for Sabah and Sarawak to GDM2000",
-                "3. BT68 to BRSO(Old)", "4. BRSO(Old) to BT68"
+                "3. BT68 to BRSO(Old)", 
+                "4. BRSO(Old) to BT68"
             ]
             state_options = ["Sabah", "Sarawak"]
 
