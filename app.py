@@ -1,6 +1,7 @@
 import io
 import os
 import json
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -16,6 +17,44 @@ from network_3d import adjust_3d_network
 
 # --- Import GDTS Datum Transformation Engine ---
 import datum_transform as dt
+
+# --- Helper Functions for Batch Transformation ---
+def parse_coordinate_to_deg(val):
+    """
+    Parses a string or numeric value to Decimal Degrees.
+    Supports DD format (e.g. 1.483333 or "1.483333")
+    and DMS strings (e.g. "1° 29' 0.00\"" or "1 29 0.0" or "1d 29m 0s").
+    """
+    if pd.isna(val):
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    
+    val_str = str(val).strip()
+    
+    # Check for DMS pattern with d/m/s or °/'/" symbols or simple space-separated components
+    pattern = r'^\s*([+-]?\d+)[°\s_dD-]+(\d+)[′\'\s_mM-]+(\d+(?:\.\d+)?)[″"\s_sS]*\s*$'
+    match = re.match(pattern, val_str)
+    if match:
+        d = float(match.group(1))
+        m = float(match.group(2))
+        s = float(match.group(3))
+        sign = -1.0 if d < 0 or val_str.startswith('-') else 1.0
+        return sign * (abs(d) + m / 60.0 + s / 3600.0)
+    
+    # Attempt direct numeric float conversion
+    try:
+        return float(val_str)
+    except ValueError:
+        raise ValueError(f"Unable to parse coordinate: '{val}'")
+
+def format_deg_to_dms_str(deg):
+    """Formats a decimal degree float into a clean DMS string (DD° MM' SS.SS")."""
+    if pd.isna(deg) or deg is None:
+        return ""
+    d, m, s = dt.deg_to_dms(deg)
+    return f"{d}° {m}' {s:.4f}\""
+
 
 # --- 1. Page Configuration ---
 st.set_page_config(page_title="GEOADJUST", page_icon="🌐", layout="wide")
@@ -504,7 +543,6 @@ tab1, tab2, tab3, tab4 = st.tabs([
 with tab1:
     st.header("📏 1D Leveling Network Adjustment")
 
-
     col_cfg1, col_cfg2 = st.columns(2)
     with col_cfg1:
         bm_name = st.text_input("Fixed Benchmark Station Name", value="BMFGHT", key="1d_bm_name")
@@ -950,21 +988,25 @@ with tab3:
 with tab4:
     st.header("🧭 Geodetic Datum Transformation System")
 
-    
     mode = st.radio(
         "Select Operation Mode:",
-        ["3-Dimensional Transformation", "Map Projection", "Geodetic Tools (Conversion)"],
+        [
+            "3-Dimensional Transformation",
+            "Batch Datum Transformation",
+            "Map Projection",
+            "Geodetic Tools (Conversion)",
+        ],
         horizontal=True,
-        key="gdts_mode"
+        key="gdts_mode",
     )
 
     st.markdown("---")
 
     # -----------------------------------------------------
-    # MODE 1: 3-Dimensional Transformation
+    # MODE 1: Single Point 3-Dimensional Transformation
     # -----------------------------------------------------
     if mode == "3-Dimensional Transformation":
-        st.subheader("📐 3D Datum Transformation")
+        st.subheader("📐 Single Point 3D Datum Transformation")
         
         region = st.selectbox("Select Region / Zone:", ["Peninsular Malaysia", "Sabah and Sarawak"], key="trans_region")
 
@@ -972,10 +1014,6 @@ with tab4:
             modules = [
                 "1. GDM2000 to PMSGN94", 
                 "2. PMSGN94 to GDM2000",
-                #"3. GDM2000 to MRT48", 
-                #"4. MRT48 to GDM2000",
-                #"5. PMSGN94 to MRT48", 
-                #"6. MRT48 to PMSGN94"
             ]
         else:
             modules = [
@@ -988,7 +1026,7 @@ with tab4:
                 "7. GDM2000 to BT68 for Sarawak", 
                 "8. BT68 to GDM2000 for Sarawak",
                 "9. EMSGN97 to BT68 for Sarawak", 
-                "10. BT68 to EMSGN97 for Sarawak"
+                "10. BT68 to EMSGN97 for Sarawak",
             ]
 
         selected_module = st.selectbox("Transformation Module:", modules, key="trans_module_sel")
@@ -1033,7 +1071,159 @@ with tab4:
             st.dataframe(df_res, use_container_width=True, hide_index=True)
 
     # -----------------------------------------------------
-    # MODE 2: Map Projection
+    # MODE 2: Batch Datum Transformation (Upload CSV/XLSX)
+    # -----------------------------------------------------
+    elif mode == "Batch Datum Transformation":
+        st.subheader("📁 Batch Datum Transformation")
+        st.caption("Upload a `.csv` or `.xlsx` file containing coordinate columns to convert in batch.")
+
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            batch_region = st.selectbox("Region / Zone:", ["Peninsular Malaysia", "Sabah and Sarawak"], key="batch_region")
+            if batch_region == "Peninsular Malaysia":
+                batch_modules = [
+                    "1. GDM2000 to PMSGN94",
+                    "2. PMSGN94 to GDM2000",
+                ]
+            else:
+                batch_modules = [
+                    "1. GDM2000 to EMSGN97",
+                    "2. EMSGN97 to GDM2000",
+                    "3. GDM2000 to BT68 for Sabah",
+                    "4. BT68 to GDM2000 for Sabah",
+                    "5. EMSGN97 to BT68 for Sabah",
+                    "6. BT68 to EMSGN97 for Sabah",
+                    "7. GDM2000 to BT68 for Sarawak",
+                    "8. BT68 to GDM2000 for Sarawak",
+                    "9. EMSGN97 to BT68 for Sarawak",
+                    "10. BT68 to EMSGN97 for Sarawak",
+                ]
+            selected_batch_module = st.selectbox("Transformation Module:", batch_modules, key="batch_mod_sel")
+            batch_module_key = selected_batch_module.split(". ", 1)[1]
+
+        with col_b2:
+            input_unit = st.radio(
+                "Input Coordinate Unit / Format:",
+                ["Degree Decimal (DD)", "Degree Minutes Seconds (DMS)"],
+                key="batch_in_unit",
+            )
+            output_unit = st.radio(
+                "Output Coordinate Unit / Format:",
+                ["Degree Decimal (DD)", "Degree Minutes Seconds (DMS)"],
+                key="batch_out_unit",
+            )
+
+        st.markdown("---")
+        batch_file = st.file_uploader(
+            "Upload File for Batch Transformation (.csv or .xlsx)",
+            type=["csv", "xlsx"],
+            key="batch_file_uploader",
+        )
+
+        if batch_file is not None:
+            try:
+                if batch_file.name.endswith(".csv"):
+                    df_batch = pd.read_csv(batch_file)
+                else:
+                    df_batch = pd.read_excel(batch_file)
+
+                st.subheader("📋 Uploaded File Preview")
+                st.dataframe(df_batch.head(10), use_container_width=True)
+
+                cols = list(df_batch.columns)
+                st.markdown("**Map File Columns to Coordinates:**")
+                c_lat, c_lon, c_h = st.columns(3)
+                with c_lat:
+                    lat_col = st.selectbox("Select Latitude Column:", cols, index=0, key="batch_lat_col")
+                with c_lon:
+                    lon_col = st.selectbox("Select Longitude Column:", cols, index=min(1, len(cols) - 1), key="batch_lon_col")
+                with c_h:
+                    h_col = st.selectbox("Select Height Column (optional):", ["None"] + cols, index=0, key="batch_h_col")
+
+                if st.button("🚀 Process Batch Transformation", type="primary", use_container_width=True, key="btn_batch_run"):
+                    with st.spinner("Processing batch coordinates..."):
+                        df_out = df_batch.copy()
+
+                        out_lat_list = []
+                        out_lon_list = []
+                        out_h_list = []
+
+                        for idx, row in df_batch.iterrows():
+                            # Extract & parse input latitude and longitude
+                            raw_lat = row[lat_col]
+                            raw_lon = row[lon_col]
+
+                            lat_deg = parse_coordinate_to_deg(raw_lat)
+                            lon_deg = parse_coordinate_to_deg(raw_lon)
+
+                            h_val = 0.0
+                            if h_col != "None" and pd.notna(row[h_col]):
+                                try:
+                                    h_val = float(row[h_col])
+                                except ValueError:
+                                    h_val = 0.0
+
+                            # Run Transformation Engine
+                            lat_out, lon_out, h_out = dt.bursa_wolf_transform(lat_deg, lon_deg, h_val, batch_module_key)
+
+                            # Format Output
+                            if "DMS" in output_unit:
+                                out_lat_list.append(format_deg_to_dms_str(lat_out))
+                                out_lon_list.append(format_deg_to_dms_str(lon_out))
+                            else:
+                                out_lat_list.append(round(lat_out, 8))
+                                out_lon_list.append(round(lon_out, 8))
+
+                            out_h_list.append(round(h_out, 4))
+
+                        df_out["Transformed_Latitude"] = out_lat_list
+                        df_out["Transformed_Longitude"] = out_lon_list
+                        if h_col != "None":
+                            df_out["Transformed_Height_m"] = out_h_list
+
+                        st.session_state["df_batch_results"] = df_out
+                        st.success("Batch transformation complete!")
+
+            except Exception as e:
+                st.error(f"Error reading file or parsing data: {e}")
+
+        if "df_batch_results" in st.session_state:
+            df_res = st.session_state["df_batch_results"]
+            st.markdown("---")
+            st.subheader("📊 Transformed Batch Results Preview")
+            st.dataframe(df_res.head(20), use_container_width=True)
+
+            out_filename_base = st.text_input(
+                "Result File Name Base:", value="Batch_Transformed_Coordinates", key="batch_out_filename"
+            )
+
+            d_col1, d_col2 = st.columns(2)
+            with d_col1:
+                csv_data = df_res.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label="📥 Download Results (.CSV)",
+                    data=csv_data,
+                    file_name=f"{out_filename_base}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                    key="dl_batch_csv",
+                )
+
+            with d_col2:
+                excel_buf = io.BytesIO()
+                with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
+                    df_res.to_excel(writer, sheet_name="Transformed", index=False)
+                st.download_button(
+                    label="📥 Download Results (.XLSX)",
+                    data=excel_buf.getvalue(),
+                    file_name=f"{out_filename_base}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="dl_batch_xlsx",
+                )
+
+    # -----------------------------------------------------
+    # MODE 3: Map Projection
     # -----------------------------------------------------
     elif mode == "Map Projection":
         st.subheader("🗺️ Map Projection System")
@@ -1045,10 +1235,6 @@ with tab4:
                 "2. RSO Geocentric for Peninsular to GDM2000",
                 "3. GDM2000 to Cassini-Soldner Geocentric",
                 "4. Cassini-Soldner Geocentric to GDM2000",
-                #"5. MRT48 to MRSO(Old)", 
-                #"6. MRSO(Old) to MRT48",
-                #"7. MRSO(Old) to Cassini-Soldner(Old)", 
-                #"8. Cassini-Soldner(Old) to MRSO(Old)"
             ]
             state_options = ["Johor", "Kedah & Perlis", "Kelantan", "N.Sembilan & Melaka", "Pahang", "Perak", "Pulau Pinang", "Selangor & Kuala Lumpur", "Terengganu"]
         else:
@@ -1069,7 +1255,7 @@ with tab4:
         st.info("💡 Complete RSO/Cassini Map Projection calculations are configured for the selected region.")
 
     # -----------------------------------------------------
-    # MODE 3: Geodetic Tools (Coordinate Conversion)
+    # MODE 4: Geodetic Tools (Coordinate Conversion)
     # -----------------------------------------------------
     elif mode == "Geodetic Tools (Conversion)":
         st.subheader("🌐 Geodetic Coordinate Conversion Tools")
