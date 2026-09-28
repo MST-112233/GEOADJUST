@@ -1059,12 +1059,12 @@ with tab4:
                 
                 df_res = pd.DataFrame([{
                     "Station": stn_name,
-                    "From Latitude": f"{d_lat}° {m_lat}' {s_lat:.5f}\"",
-                    "From Longitude": f"{d_lon}° {m_lon}' {s_lon:.5f}\"",
-                    "From Ell. Height (m)": f"{h_in:.3f}",
-                    "To Latitude": f"{out_d_lat}° {out_m_lat}' {out_s_lat:.5f}\"",
-                    "To Longitude": f"{out_d_lon}° {out_m_lon}' {out_s_lon:.5f}\"",
-                    "To Ell. Height (m)": f"{h_out:.3f}"
+                    "From Latitude": f"{d_lat}° {m_lat}' {s_lat:.4f}\"",
+                    "From Longitude": f"{d_lon}° {m_lon}' {s_lon:.4f}\"",
+                    "From Ell. Height (m)": f"{h_in:.2f}",
+                    "To Latitude": f"{out_d_lat}° {out_m_lat}' {out_s_lat:.4f}\"",
+                    "To Longitude": f"{out_d_lon}° {out_m_lon}' {out_s_lon:.4f}\"",
+                    "To Ell. Height (m)": f"{h_out:.2f}"
                 }])
                 st.dataframe(df_res, use_container_width=True, hide_index=True)
 
@@ -1094,7 +1094,7 @@ with tab4:
                     with c_h:
                         h_col = st.selectbox("Height Column (Optional):", ["None"] + cols, index=0, key="b3d_h_col")
 
-                    if st.button("🚀 Run Batch 3D Transformation", type="primary", use_container_width=True, key="btn_b3d_run"):
+                    if st.button("🚀 Run Transformation", type="primary", use_container_width=True, key="btn_b3d_run"):
                         df_out = df_b3d.copy()
                         out_lats, out_lons, out_hs = [], [], []
 
