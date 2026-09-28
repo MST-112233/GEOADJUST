@@ -982,7 +982,7 @@ with tab3:
 # TAB 4: DATUM TRANSFORMATION & MAP PROJECTION 
 # =========================================================
 with tab4:
-    st.header("🧭 Geodetic Datum Transformation System")
+    st.header("🧭 Geodetic Datum Transformation & Map Projection")
 
     mode = st.radio(
         "Select Operation Mode:",
@@ -1059,12 +1059,12 @@ with tab4:
                 
                 df_res = pd.DataFrame([{
                     "Station": stn_name,
-                    "From Latitude": f"{d_lat}° {m_lat}' {s_lat:.4f}\"",
-                    "From Longitude": f"{d_lon}° {m_lon}' {s_lon:.4f}\"",
-                    "From Ell. Height (m)": f"{h_in:.2f}",
-                    "To Latitude": f"{out_d_lat}° {out_m_lat}' {out_s_lat:.4f}\"",
-                    "To Longitude": f"{out_d_lon}° {out_m_lon}' {out_s_lon:.4f}\"",
-                    "To Ell. Height (m)": f"{h_out:.2f}"
+                    "From Latitude": f"{d_lat}° {m_lat}' {s_lat:.5f}\"",
+                    "From Longitude": f"{d_lon}° {m_lon}' {s_lon:.5f}\"",
+                    "From Ell. Height (m)": f"{h_in:.3f}",
+                    "To Latitude": f"{out_d_lat}° {out_m_lat}' {out_s_lat:.5f}\"",
+                    "To Longitude": f"{out_d_lon}° {out_m_lon}' {out_s_lon:.5f}\"",
+                    "To Ell. Height (m)": f"{h_out:.3f}"
                 }])
                 st.dataframe(df_res, use_container_width=True, hide_index=True)
 
@@ -1111,7 +1111,7 @@ with tab4:
                             else:
                                 out_lats.append(round(lat_out, 8))
                                 out_lons.append(round(lon_out, 8))
-                            out_hs.append(round(h_out, 4))
+                            out_hs.append(round(h_out, 3))
 
                         df_out["Transformed_Latitude"] = out_lats
                         df_out["Transformed_Longitude"] = out_lons
