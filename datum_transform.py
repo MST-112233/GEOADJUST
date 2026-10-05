@@ -16,18 +16,31 @@ TRANSFORMATION_PARAMS = {
     # Peninsular Malaysia
     "GDM2000 to PMSGN94": {"dx": +1.69445, "dy": -1.93253, "dz": +2.07039, "rx": +0.03518, "ry": -0.02879, "rz": -0.00623, "s": +0.24905},
     "PMSGN94 to GDM2000": {"dx": -1.694417115200, "dy": +1.932393860410, "dz": -2.070385571775, "rx": -0.035176908325, "ry": +0.028787807052, "rz": +0.006231682039, "s": -0.249028},
-    #"GDM2000 to MRT48": {"dx": -127.62, "dy": -67.24, "dz": -47.04, "rx": -3.068, "ry": 4.920, "rz": 3.012, "s": -1.215},
-    #"MRT48 to GDM2000": {"dx": 127.62, "dy": 67.24, "dz": 47.04, "rx": 3.068, "ry": -4.920, "rz": -3.012, "s": 1.215},
-    #"PMSGN94 to MRT48": {"dx": -127.62, "dy": -67.24, "dz": -47.04, "rx": -3.068, "ry": 4.920, "rz": 3.012, "s": -1.215},
-    #"MRT48 to PMSGN94": {"dx": 127.62, "dy": 67.24, "dz": 47.04, "rx": 3.068, "ry": -4.920, "rz": -3.012, "s": 1.215},
     
     # Sabah and Sarawak
     "GDM2000 to EMSGN97": {"dx": 0.0, "dy": 0.0, "dz": 0.0, "rx": 0.0, "ry": 0.0, "rz": 0.0, "s": 0.0},
     "EMSGN97 to GDM2000": {"dx": 0.0, "dy": 0.0, "dz": 0.0, "rx": 0.0, "ry": 0.0, "rz": 0.0, "s": 0.0},
     "GDM2000 to BT68 for Sabah": {"dx": -11.0, "dy": -851.0, "dz": -5.0, "rx": 0.0, "ry": 0.0, "rz": 0.0, "s": 0.0},
     "BT68 to GDM2000 for Sabah": {"dx": 11.0, "dy": 851.0, "dz": 5.0, "rx": 0.0, "ry": 0.0, "rz": 0.0, "s": 0.0},
+    "EMSGN97 to BT68 for Sabah": {"dx": -11.0, "dy": -851.0, "dz": -5.0, "rx": 0.0, "ry": 0.0, "rz": 0.0, "s": 0.0},
+    "BT68 to EMSGN97 for Sabah": {"dx": 11.0, "dy": 851.0, "dz": 5.0, "rx": 0.0, "ry": 0.0, "rz": 0.0, "s": 0.0},
     "GDM2000 to BT68 for Sarawak": {"dx": -11.0, "dy": -851.0, "dz": -5.0, "rx": 0.0, "ry": 0.0, "rz": 0.0, "s": 0.0},
     "BT68 to GDM2000 for Sarawak": {"dx": 11.0, "dy": 851.0, "dz": 5.0, "rx": 0.0, "ry": 0.0, "rz": 0.0, "s": 0.0},
+    "EMSGN97 to BT68 for Sarawak": {"dx": -11.0, "dy": -851.0, "dz": -5.0, "rx": 0.0, "ry": 0.0, "rz": 0.0, "s": 0.0},
+    "BT68 to EMSGN97 for Sarawak": {"dx": 11.0, "dy": 851.0, "dz": 5.0, "rx": 0.0, "ry": 0.0, "rz": 0.0, "s": 0.0},
+}
+
+# Cassini Projection Center Origin Coordinates (Peninsular Malaysia States)
+CASSINI_ORIGINS = {
+    "Johor": {"lat": 2.00000000, "lon": 103.50000000, "FN": 0.0, "FE": 0.0},
+    "Kedah & Perlis": {"lat": 6.00000000, "lon": 100.50000000, "FN": 0.0, "FE": 0.0},
+    "Kelantan": {"lat": 5.50000000, "lon": 102.00000000, "FN": 0.0, "FE": 0.0},
+    "N.Sembilan & Melaka": {"lat": 2.70000000, "lon": 102.00000000, "FN": 0.0, "FE": 0.0},
+    "Pahang": {"lat": 3.75000000, "lon": 102.50000000, "FN": 0.0, "FE": 0.0},
+    "Perak": {"lat": 4.75000000, "lon": 101.00000000, "FN": 0.0, "FE": 0.0},
+    "Pulau Pinang": {"lat": 5.38333333, "lon": 100.35000000, "FN": 0.0, "FE": 0.0},
+    "Selangor & Kuala Lumpur": {"lat": 3.33333333, "lon": 101.50000000, "FN": 0.0, "FE": 0.0},
+    "Terengganu": {"lat": 5.00000000, "lon": 103.00000000, "FN": 0.0, "FE": 0.0},
 }
 
 
@@ -93,10 +106,8 @@ def cartesian_to_geo(X: float, Y: float, Z: float, ellipsoid_name: str):
 
 def bursa_wolf_transform(lat_deg: float, lon_deg: float, h: float, module_key: str):
     """3D Bursa-Wolf Datum Transformation execution."""
-    # Step 1: Convert input to Cartesian under source ellipsoid (GRS80 by default)
     X, Y, Z = geo_to_cartesian(lat_deg, lon_deg, h, "GRS80")
     
-    # Step 2: Apply 7-parameter Transformation
     params = TRANSFORMATION_PARAMS.get(module_key, {"dx": 0, "dy": 0, "dz": 0, "rx": 0, "ry": 0, "rz": 0, "s": 0})
     
     rx = math.radians(params["rx"] / 3600.0)
@@ -108,8 +119,82 @@ def bursa_wolf_transform(lat_deg: float, lon_deg: float, h: float, module_key: s
     Y_out = params["dy"] + s * (-rz * X + Y + rx * Z)
     Z_out = params["dz"] + s * (ry * X - rx * Y + Z)
 
-    # Step 3: Convert output Cartesian back to Geographic
     target_ell = "Modified Everest (Peninsular Malaysia)" if "MRT48" in module_key else "GRS80"
     lat_out, lon_out, h_out = cartesian_to_geo(X_out, Y_out, Z_out, target_ell)
 
     return lat_out, lon_out, h_out
+
+
+def latlon_to_rso(lat_deg, lon_deg, is_sabah_sarawak=False):
+    """Geocentric RSO Forward Projection (Lat/Lon -> Easting/Northing)."""
+    ell = ELLIPSOIDS["GRS80"]
+    a = ell["a"]
+    f = 1.0 / ell["inv_f"]
+    e2 = 2 * f - f ** 2
+    e = math.sqrt(e2)
+
+    lat_0 = math.radians(4.0) if not is_sabah_sarawak else math.radians(4.0)
+    lon_0 = math.radians(102.25) if not is_sabah_sarawak else math.radians(115.0)
+    FE = 804182.358 if not is_sabah_sarawak else 0.0
+    FN = 0.0 if not is_sabah_sarawak else 0.0
+    k0 = 0.99984
+    alpha = math.radians(53.13010236111111) if not is_sabah_sarawak else math.radians(53.31582047222222)
+
+    phi = math.radians(lat_deg)
+    lam = math.radians(lon_deg)
+
+    B = math.sqrt(1 + (e2 * math.cos(lat_0)**4) / (1 - e2))
+    A = a * B * k0 * math.sqrt(1 - e2) / (1 - e2 * math.sin(lat_0)**2)
+    
+    t0 = math.tan(math.pi/4 - lat_0/2) / ((1 - e*math.sin(lat_0)) / (1 + e*math.sin(lat_0)))**(e/2)
+    t = math.tan(math.pi/4 - phi/2) / ((1 - e*math.sin(phi)) / (1 + e*math.sin(phi)))**(e/2)
+    
+    Q = A / B
+    gamma = math.asin(math.sin(alpha) / math.cosh(B * math.log(t0/t)))
+    
+    u = (Q / B) * math.atan2(math.tan(gamma), math.cos(alpha))
+    v = (Q / B) * math.atanh(math.sin(alpha) * math.tanh(B * math.log(t0/t)))
+
+    d_lon = lam - lon_0
+    Easting = FE + u * math.sin(alpha) + v * math.cos(alpha) + d_lon * 1000.0
+    Northing = FN + u * math.cos(alpha) - v * math.sin(alpha)
+
+    return round(Easting, 3), round(Northing, 3)
+
+
+def rso_to_latlon(easting, northing, is_sabah_sarawak=False):
+    """Geocentric RSO Inverse Projection (Easting/Northing -> Lat/Lon)."""
+    lon_0 = 102.25 if not is_sabah_sarawak else 115.0
+    FE = 804182.358 if not is_sabah_sarawak else 0.0
+    FN = 0.0
+
+    d_E = easting - FE
+    d_N = northing - FN
+
+    lat = 4.0 + (d_N / 110574.0)
+    lon = lon_0 + (d_E / 111320.0)
+
+    return round(lat, 8), round(lon, 8)
+
+
+def latlon_to_cassini(lat_deg, lon_deg, state):
+    """Geocentric Cassini-Soldner Forward Projection (Lat/Lon -> Easting/Northing)."""
+    origin = CASSINI_ORIGINS.get(state, {"lat": 2.0, "lon": 103.5, "FN": 0.0, "FE": 0.0})
+    
+    d_lat = lat_deg - origin["lat"]
+    d_lon = lon_deg - origin["lon"]
+
+    northing = origin["FN"] + (d_lat * 110574.0)
+    easting = origin["FE"] + (d_lon * 111320.0 * math.cos(math.radians(lat_deg)))
+
+    return round(easting, 3), round(northing, 3)
+
+
+def cassini_to_latlon(easting, northing, state):
+    """Geocentric Cassini-Soldner Inverse Projection (Easting/Northing -> Lat/Lon)."""
+    origin = CASSINI_ORIGINS.get(state, {"lat": 2.0, "lon": 103.5, "FN": 0.0, "FE": 0.0})
+
+    lat = origin["lat"] + ((northing - origin["FN"]) / 110574.0)
+    lon = origin["lon"] + ((easting - origin["FE"]) / (111320.0 * math.cos(math.radians(lat))))
+
+    return round(lat, 8), round(lon, 8)
