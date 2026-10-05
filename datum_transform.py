@@ -1,14 +1,15 @@
 import math
-
+# Refer to GDTS 4.0
+# PKPUP 3/2021 (PAGE 12, PDF 22)
 # Ellipsoid Parameters (a = Semi-major axis (m), inv_f = Inverse Flattening 1/f)
 ELLIPSOIDS = {
     "GRS80": {"a": 6378137.0, "inv_f": 298.257222101},
     "WGS84": {"a": 6378137.0, "inv_f": 298.257223563},
-    "Everest 1830": {"a": 6377276.34518, "inv_f": 300.80173},
+   # "Everest 1830": {"a": 6377276.34518, "inv_f": 300.80173},
     "Modified Everest (Peninsular Malaysia)": {"a": 6377304.063, "inv_f": 300.8017},
-    "Modified Everest (Borneo)": {"a": 6377298.556, "inv_f": 300.8017},
-    "Clarke 1858": {"a": 6378249.145, "inv_f": 293.465},
-    "Bessel 1841": {"a": 6377397.155, "inv_f": 299.15281}
+    "Modified Everest (East Malaysia)": {"a": 6377298.556, "inv_f": 300.8017},
+   # "Clarke 1858": {"a": 6378249.145, "inv_f": 293.465},
+   # "Bessel 1841": {"a": 6377397.155, "inv_f": 299.15281}
 }
 
 # 7-Parameter Helmert Transformations (dx, dy, dz in meters, rx, ry, rz in arcsec, s in ppm)
@@ -30,17 +31,18 @@ TRANSFORMATION_PARAMS = {
     "BT68 to EMSGN97 for Sarawak": {"dx": 11.0, "dy": 851.0, "dz": 5.0, "rx": 0.0, "ry": 0.0, "rz": 0.0, "s": 0.0},
 }
 
+# Refer to PKPUP 3/2021 (PAGE 62 , PDF 69 )
 # Cassini Projection Center Origin Coordinates (Peninsular Malaysia States)
 CASSINI_ORIGINS = {
-    "Johor": {"lat": 2.00000000, "lon": 103.50000000, "FN": 0.0, "FE": 0.0},
-    "Kedah & Perlis": {"lat": 6.00000000, "lon": 100.50000000, "FN": 0.0, "FE": 0.0},
-    "Kelantan": {"lat": 5.50000000, "lon": 102.00000000, "FN": 0.0, "FE": 0.0},
-    "N.Sembilan & Melaka": {"lat": 2.70000000, "lon": 102.00000000, "FN": 0.0, "FE": 0.0},
-    "Pahang": {"lat": 3.75000000, "lon": 102.50000000, "FN": 0.0, "FE": 0.0},
-    "Perak": {"lat": 4.75000000, "lon": 101.00000000, "FN": 0.0, "FE": 0.0},
-    "Pulau Pinang": {"lat": 5.38333333, "lon": 100.35000000, "FN": 0.0, "FE": 0.0},
-    "Selangor & Kuala Lumpur": {"lat": 3.33333333, "lon": 101.50000000, "FN": 0.0, "FE": 0.0},
-    "Terengganu": {"lat": 5.00000000, "lon": 103.00000000, "FN": 0.0, "FE": 0.0},
+    "Johor": {"lat": "02°02’33.20196\" N", "lon": "103°33'39.83730\" E", "FN": 0.0, "FE": 0.0},
+    "Kedah & Perlis": {"lat": "05°57'52.82155\" N", "lon": "100°38'10.93860\" E", "FN": 0.0, "FE": 0.0},
+    "Kelantan": {"lat": "05°53'37.07975\" N", "lon": "102°10'32.24529\" E", "FN": 0.0, "FE": 0.0},
+    "N.Sembilan & Melaka": {"lat": "02°42'43.63383\" N", "lon": "101°56'22.92969\" E", "FN": 0.0, "FE": 0.0},
+    "Pahang": {"lat": "03°42'38.69263\" N", "lon": "102°26'04.60772\" E", "FN": 0.0, "FE": 0.0},
+    "Perak": {"lat": "04°51'32.64488\" N", "lon": "100°48'55.47038\" E", "FN": 0.0, "FE": 0.0},
+    "Pulau Pinang": {"lat": "05°25'15.20433\" N", "lon": "100°20'40.76024\" E", "FN": 0.0, "FE": 0.0},
+    "Selangor & Kuala Lumpur": {"lat": "03°40'48.37778\" N", "lon": "101°30'24.48581\" E", "FN": 0.0, "FE": 0.0},
+    "Terengganu": {"lat": "04°56'44.97184\" N", "lon": "102°53'37.00496\" E", "FN": 0.0, "FE": 0.0},
 }
 
 
