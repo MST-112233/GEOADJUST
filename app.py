@@ -1075,9 +1075,9 @@ with tab4:
                     s_lon = st.number_input("Sec", value=0.0, format="%.4f", key="trans_s_lon")
             else:
                 with col_in1:
-                    lat_dd_in = st.number_input("Latitude (Decimal Degrees)", value=1.4833333, format="%.8f", key="trans_dd_lat")
+                    lat_dd_in = st.number_input("Latitude (Decimal Degrees)", value=1.4833333, format="%.5f", key="trans_dd_lat")
                 with col_in2:
-                    lon_dd_in = st.number_input("Longitude (Decimal Degrees)", value=103.7500000, format="%.8f", key="trans_dd_lon")
+                    lon_dd_in = st.number_input("Longitude (Decimal Degrees)", value=103.7500000, format="%.5f", key="trans_dd_lon")
 
             with col_in3:
                 h_in = st.number_input("Ellipsoidal Height (m)", value=10.000, format="%.3f", key="trans_h_in")
@@ -1103,8 +1103,8 @@ with tab4:
                     to_lat_str = f"{out_d_lat}° {out_m_lat}' {out_s_lat:.5f}\""
                     to_lon_str = f"{out_d_lon}° {out_m_lon}' {out_s_lon:.5f}\""
                 else:
-                    to_lat_str = f"{lat_out:.8f}°"
-                    to_lon_str = f"{lon_out:.8f}°"
+                    to_lat_str = f"{lat_out:.5f}°"
+                    to_lon_str = f"{lon_out:.5f}°"
 
                 st.success("Transformation Successful!")
                 st.markdown("### 📊 Transformed Output Results")
@@ -1162,8 +1162,8 @@ with tab4:
                                 out_lats.append(format_deg_to_dms_str(lat_out))
                                 out_lons.append(format_deg_to_dms_str(lon_out))
                             else:
-                                out_lats.append(round(lat_out, 8))
-                                out_lons.append(round(lon_out, 8))
+                                out_lats.append(round(lat_out, 5))
+                                out_lons.append(round(lon_out, 5))
                             out_hs.append(round(h_out, 3))
 
                         df_out[f"{to_name} Latitude"] = out_lats
@@ -1224,7 +1224,7 @@ with tab4:
             if is_cassini:
                 selected_state = st.selectbox("State Selection:", state_options, key="proj_state_sel")
             else:
-                st.selectbox("State Selection (Disabled for RSO):", ["Not Applicable"], disabled=True, key="proj_state_disabled")
+                st.selectbox("State Selection :", ["Not Applicable"], disabled=True, key="proj_state_disabled")
                 selected_state = None
 
         proc_type_proj = st.radio("Processing Type:", ["Single Point", "Batch File Processing"], horizontal=True, key="proc_type_proj")
@@ -1253,9 +1253,9 @@ with tab4:
                         p_s_lon = st.number_input("Sec", value=0.0, format="%.4f", key="p_s_lon")
                 else:
                     with col_i1:
-                        p_dd_lat = st.number_input("Latitude (Decimal Degrees)", value=1.4833333, format="%.8f", key="p_dd_lat")
+                        p_dd_lat = st.number_input("Latitude (Decimal Degrees)", value=1.4833333, format="%.5f", key="p_dd_lat")
                     with col_i2:
-                        p_dd_lon = st.number_input("Longitude (Decimal Degrees)", value=103.7500000, format="%.8f", key="p_dd_lon")
+                        p_dd_lon = st.number_input("Longitude (Decimal Degrees)", value=103.7500000, format="%.5f", key="p_dd_lon")
             else:
                 col_i1, col_i2 = st.columns(2)
                 with col_i1:
@@ -1275,8 +1275,8 @@ with tab4:
                     
                     df_res = pd.DataFrame([{
                         "Station": stn_name_proj,
-                        f"{from_name} Latitude": f"{lat_val:.8f}°",
-                        f"{from_name} Longitude": f"{lon_val:.8f}°",
+                        f"{from_name} Latitude": f"{lat_val:.5f}°",
+                        f"{from_name} Longitude": f"{lon_val:.5f}°",
                         f"{to_name} Easting (m)": f"{E:.3f}",
                         f"{to_name} Northing (m)": f"{N:.3f}"
                     }])
@@ -1290,8 +1290,8 @@ with tab4:
                         "Station": stn_name_proj,
                         f"{from_name} Easting (m)": f"{in_easting:.3f}",
                         f"{from_name} Northing (m)": f"{in_northing:.3f}",
-                        f"{to_name} Latitude": f"{lat_val:.8f}°",
-                        f"{to_name} Longitude": f"{lon_val:.8f}°"
+                        f"{to_name} Latitude": f"{lat_val:.5f}°",
+                        f"{to_name} Longitude": f"{lon_val:.5f}°"
                     }])
 
                 st.success("Projection Transformation Complete!")
@@ -1401,9 +1401,9 @@ with tab4:
                         g_s_lon = st.number_input("Sec", value=0.0, format="%.4f", key="g_s_lon")
                 else:
                     with col_g1:
-                        g_dd_lat = st.number_input("Latitude (Decimal Degrees)", value=1.4833333, format="%.8f", key="g_dd_lat")
+                        g_dd_lat = st.number_input("Latitude (Decimal Degrees)", value=1.4833333, format="%.5f", key="g_dd_lat")
                     with col_g2:
-                        g_dd_lon = st.number_input("Longitude (Decimal Degrees)", value=103.7500000, format="%.8f", key="g_dd_lon")
+                        g_dd_lon = st.number_input("Longitude (Decimal Degrees)", value=103.7500000, format="%.5f", key="g_dd_lon")
 
                 with col_g3:
                     g_h = st.number_input("Ellipsoidal Height (m)", value=10.0, format="%.3f", key="g_h")
@@ -1418,8 +1418,8 @@ with tab4:
                     
                     df_res = pd.DataFrame([{
                         "Station": stn_name_tools,
-                        "Geographical Latitude": f"{lat_val:.8f}°",
-                        "Geographical Longitude": f"{lon_val:.8f}°",
+                        "Geographical Latitude": f"{lat_val:.5f}°",
+                        "Geographical Longitude": f"{lon_val:.5f}°",
                         "Geographical Ell. Height (m)": f"{g_h:.3f}",
                         "Cartesian X (m)": f"{X:.4f}",
                         "Cartesian Y (m)": f"{Y:.4f}",
@@ -1447,8 +1447,8 @@ with tab4:
                         "Cartesian X (m)": f"{in_X:.4f}",
                         "Cartesian Y (m)": f"{in_Y:.4f}",
                         "Cartesian Z (m)": f"{in_Z:.4f}",
-                        "Geographical Latitude": f"{lat_deg:.8f}°",
-                        "Geographical Longitude": f"{lon_deg:.8f}°",
+                        "Geographical Latitude": f"{lat_deg:.5f}°",
+                        "Geographical Longitude": f"{lon_deg:.5f}°",
                         "Geographical Ell. Height (m)": f"{height:.4f}"
                     }])
                     st.dataframe(df_res, use_container_width=True, hide_index=True)
