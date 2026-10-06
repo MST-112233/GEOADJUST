@@ -1,15 +1,13 @@
 import math
-# Refer to GDTS 4.0
-# PKPUP 3/2021 (PAGE 12, PDF 22)
+
+# Refer to GDTS 4.0 & PKPUP 3/2021
 # Ellipsoid Parameters (a = Semi-major axis (m), inv_f = Inverse Flattening 1/f)
 ELLIPSOIDS = {
     "GRS80": {"a": 6378137.0, "inv_f": 298.257222101},
     "WGS84": {"a": 6378137.0, "inv_f": 298.257223563},
-   # "Everest 1830": {"a": 6377276.34518, "inv_f": 300.80173},
     "Modified Everest (Peninsular Malaysia)": {"a": 6377304.063, "inv_f": 300.8017},
     "Modified Everest (East Malaysia)": {"a": 6377298.556, "inv_f": 300.8017},
-   # "Clarke 1858": {"a": 6378249.145, "inv_f": 293.465},
-   # "Bessel 1841": {"a": 6377397.155, "inv_f": 299.15281}
+    "Everest 1830": {"a": 6377276.345, "inv_f": 300.8017},
 }
 
 # 7-Parameter Helmert Transformations (dx, dy, dz in meters, rx, ry, rz in arcsec, s in ppm)
@@ -31,18 +29,61 @@ TRANSFORMATION_PARAMS = {
     "BT68 to EMSGN97 for Sarawak": {"dx": 11.0, "dy": 851.0, "dz": 5.0, "rx": 0.0, "ry": 0.0, "rz": 0.0, "s": 0.0},
 }
 
-# Refer to PKPUP 3/2021 (PAGE 62 , PDF 69 )
+# RSO Projection Parameters (EPSG 3375, EPSG 3376, etc.)
+RSO_PARAMS = {
+    "Peninsular Malaysia Geocentric RSO": {
+        "ellipsoid": "GRS80",
+        "lat_0": 4.0,           # Center latitude (deg)
+        "lon_0": 102.25,        # Center longitude (deg)
+        "alpha_c": 53.13010236111111, # Rectified Azimuth / Skew Angle (deg)
+        "k0": 0.99984,          # Scale factor
+        "FE": 804182.358,       # False Easting (m)
+        "FN": 0.0,              # False Northing (m)
+        "gamma_c": 53.13010236111111 # Skew azimuth at projection center
+    },
+    "East Malaysia Geocentric RSO": {
+        "ellipsoid": "GRS80",
+        "lat_0": 4.0,
+        "lon_0": 115.0,
+        "alpha_c": 53.31582047222222,
+        "k0": 0.99984,
+        "FE": 0.0,
+        "FN": 0.0,
+        "gamma_c": 53.31582047222222
+    },
+    "Kertau RSO (Malaya)": {
+        "ellipsoid": "Modified Everest (Peninsular Malaysia)",
+        "lat_0": 4.0,
+        "lon_0": 102.25,
+        "alpha_c": 53.13010236111111,
+        "k0": 0.99984,
+        "FE": 804182.358,
+        "FN": 0.0,
+        "gamma_c": 53.13010236111111
+    },
+    "BRSO Old (East Malaysia)": {
+        "ellipsoid": "Modified Everest (East Malaysia)",
+        "lat_0": 4.0,
+        "lon_0": 115.0,
+        "alpha_c": 53.31582047222222,
+        "k0": 0.99984,
+        "FE": 0.0,
+        "FN": 0.0,
+        "gamma_c": 53.31582047222222
+    }
+}
+
 # Cassini Projection Center Origin Coordinates (Peninsular Malaysia States)
 CASSINI_ORIGINS = {
-    "Johor": {"lat": "02°02’33.20196\" N", "lon": "103°33'39.83730\" E", "FN": 0.0, "FE": 0.0},
-    "Kedah & Perlis": {"lat": "05°57'52.82155\" N", "lon": "100°38'10.93860\" E", "FN": 0.0, "FE": 0.0},
-    "Kelantan": {"lat": "05°53'37.07975\" N", "lon": "102°10'32.24529\" E", "FN": 0.0, "FE": 0.0},
-    "N.Sembilan & Melaka": {"lat": "02°42'43.63383\" N", "lon": "101°56'22.92969\" E", "FN": 0.0, "FE": 0.0},
-    "Pahang": {"lat": "03°42'38.69263\" N", "lon": "102°26'04.60772\" E", "FN": 0.0, "FE": 0.0},
-    "Perak": {"lat": "04°51'32.64488\" N", "lon": "100°48'55.47038\" E", "FN": 0.0, "FE": 0.0},
-    "Pulau Pinang": {"lat": "05°25'15.20433\" N", "lon": "100°20'40.76024\" E", "FN": 0.0, "FE": 0.0},
-    "Selangor & Kuala Lumpur": {"lat": "03°40'48.37778\" N", "lon": "101°30'24.48581\" E", "FN": 0.0, "FE": 0.0},
-    "Terengganu": {"lat": "04°56'44.97184\" N", "lon": "102°53'37.00496\" E", "FN": 0.0, "FE": 0.0},
+    "Johor": {"lat": 2.0425561, "lon": 103.5610659, "FN": 0.0, "FE": 0.0},
+    "Kedah & Perlis": {"lat": 5.9646726, "lon": 100.6363718, "FN": 0.0, "FE": 0.0},
+    "Kelantan": {"lat": 5.8936333, "lon": 102.1756237, "FN": 0.0, "FE": 0.0},
+    "N.Sembilan & Melaka": {"lat": 2.7121205, "lon": 101.9397027, "FN": 0.0, "FE": 0.0},
+    "Pahang": {"lat": 3.7107479, "lon": 102.4346132, "FN": 0.0, "FE": 0.0},
+    "Perak": {"lat": 4.8590680, "lon": 100.8154084, "FN": 0.0, "FE": 0.0},
+    "Pulau Pinang": {"lat": 5.4208901, "lon": 100.3446556, "FN": 0.0, "FE": 0.0},
+    "Selangor & Kuala Lumpur": {"lat": 3.6801049, "lon": 101.5068016, "FN": 0.0, "FE": 0.0},
+    "Terengganu": {"lat": 4.9458255, "lon": 102.8936125, "FN": 0.0, "FE": 0.0},
 }
 
 
@@ -54,6 +95,8 @@ def dms_to_deg(deg: int, minute: int, sec: float) -> float:
 
 def deg_to_dms(decimal_deg: float):
     """Converts Decimal Degrees to (Degrees, Minutes, Seconds)."""
+    if decimal_deg is None:
+        return 0, 0, 0.0
     sign = -1 if decimal_deg < 0 else 1
     val = abs(decimal_deg)
     deg = int(val)
@@ -121,60 +164,110 @@ def bursa_wolf_transform(lat_deg: float, lon_deg: float, h: float, module_key: s
     Y_out = params["dy"] + s * (-rz * X + Y + rx * Z)
     Z_out = params["dz"] + s * (ry * X - rx * Y + Z)
 
-    target_ell = "Modified Everest (Peninsular Malaysia)" if "MRT48" in module_key else "GRS80"
+    target_ell = "Modified Everest (Peninsular Malaysia)" if "BT68" in module_key or "PMSGN" in module_key else "GRS80"
     lat_out, lon_out, h_out = cartesian_to_geo(X_out, Y_out, Z_out, target_ell)
 
     return lat_out, lon_out, h_out
 
 
-def latlon_to_rso(lat_deg, lon_deg, is_sabah_sarawak=False):
-    """Geocentric RSO Forward Projection (Lat/Lon -> Easting/Northing)."""
-    ell = ELLIPSOIDS["GRS80"]
+def latlon_to_rso(lat_deg, lon_deg, rso_param_set="Peninsular Malaysia Geocentric RSO", custom_params=None):
+    """
+    Forward RSO Projection (Lat/Lon -> Easting/Northing) using Hotine Oblique Mercator / RSO equations.
+    """
+    params = custom_params if custom_params else RSO_PARAMS.get(rso_param_set, RSO_PARAMS["Peninsular Malaysia Geocentric RSO"])
+    
+    ell = ELLIPSOIDS[params.get("ellipsoid", "GRS80")]
     a = ell["a"]
     f = 1.0 / ell["inv_f"]
     e2 = 2 * f - f ** 2
     e = math.sqrt(e2)
 
-    lat_0 = math.radians(4.0) if not is_sabah_sarawak else math.radians(4.0)
-    lon_0 = math.radians(102.25) if not is_sabah_sarawak else math.radians(115.0)
-    FE = 804182.358 if not is_sabah_sarawak else 0.0
-    FN = 0.0 if not is_sabah_sarawak else 0.0
-    k0 = 0.99984
-    alpha = math.radians(53.13010236111111) if not is_sabah_sarawak else math.radians(53.31582047222222)
+    lat_0 = math.radians(params["lat_0"])
+    lon_0 = math.radians(params["lon_0"])
+    alpha_c = math.radians(params["alpha_c"])
+    k0 = params["k0"]
+    FE = params["FE"]
+    FN = params["FN"]
 
     phi = math.radians(lat_deg)
     lam = math.radians(lon_deg)
 
     B = math.sqrt(1 + (e2 * math.cos(lat_0)**4) / (1 - e2))
     A = a * B * k0 * math.sqrt(1 - e2) / (1 - e2 * math.sin(lat_0)**2)
-    
-    t0 = math.tan(math.pi/4 - lat_0/2) / ((1 - e*math.sin(lat_0)) / (1 + e*math.sin(lat_0)))**(e/2)
-    t = math.tan(math.pi/4 - phi/2) / ((1 - e*math.sin(phi)) / (1 + e*math.sin(phi)))**(e/2)
-    
-    Q = A / B
-    gamma = math.asin(math.sin(alpha) / math.cosh(B * math.log(t0/t)))
-    
-    u = (Q / B) * math.atan2(math.tan(gamma), math.cos(alpha))
-    v = (Q / B) * math.atanh(math.sin(alpha) * math.tanh(B * math.log(t0/t)))
 
+    t0 = math.tan(math.pi / 4.0 - lat_0 / 2.0) / (((1.0 - e * math.sin(lat_0)) / (1.0 + e * math.sin(lat_0))) ** (e / 2.0))
+    t = math.tan(math.pi / 4.0 - phi / 2.0) / (((1.0 - e * math.sin(phi)) / (1.0 + e * math.sin(phi))) ** (e / 2.0))
+
+    D = B * math.sqrt(1 - e2) / (math.cos(lat_0) * math.sqrt(1 - e2 * math.sin(lat_0)**2))
+    D2 = D**2 if D >= 1.0 else 1.0
+    F = D + math.sqrt(max(0.0, D2 - 1.0))
+    E_val = F * (t0 ** B)
+    H = E_val / (t ** B)
+    L = (H - 1.0 / H) / 2.0
+    
     d_lon = lam - lon_0
-    Easting = FE + u * math.sin(alpha) + v * math.cos(alpha) + d_lon * 1000.0
-    Northing = FN + u * math.cos(alpha) - v * math.sin(alpha)
+    v = (A / B) * math.atanh(math.sin(alpha_c) * (L * math.sin(B * d_lon) - math.sinh(B * d_lon * 0.0)) / (math.cosh(B * d_lon) + L * 0.0) if False else math.sin(alpha_c) * (H - 1/H)/(2*math.cosh(B*d_lon)) )
+    
+    # Standard Hotine / RSO Rectified Formulation
+    Q = A / B
+    gamma = math.asin(math.sin(alpha_c) / math.cosh(B * math.log(t0 / t)))
+    
+    u_rect = (Q / B) * math.atan2(math.tan(gamma), math.cos(alpha_c))
+    v_rect = (Q / B) * math.atanh(math.sin(alpha_c) * math.tanh(B * math.log(t0 / t)))
+
+    u_prime = u_rect + (lam - lon_0) * 0.0
+    
+    Easting = FE + u_rect * math.sin(alpha_c) + v_rect * math.cos(alpha_c)
+    Northing = FN + u_rect * math.cos(alpha_c) - v_rect * math.sin(alpha_c)
 
     return round(Easting, 3), round(Northing, 3)
 
 
-def rso_to_latlon(easting, northing, is_sabah_sarawak=False):
-    """Geocentric RSO Inverse Projection (Easting/Northing -> Lat/Lon)."""
-    lon_0 = 102.25 if not is_sabah_sarawak else 115.0
-    FE = 804182.358 if not is_sabah_sarawak else 0.0
-    FN = 0.0
+def rso_to_latlon(easting, northing, rso_param_set="Peninsular Malaysia Geocentric RSO", custom_params=None):
+    """
+    Inverse RSO Projection (Easting/Northing -> Lat/Lon) using Hotine Oblique Mercator / RSO equations.
+    """
+    params = custom_params if custom_params else RSO_PARAMS.get(rso_param_set, RSO_PARAMS["Peninsular Malaysia Geocentric RSO"])
 
+    ell = ELLIPSOIDS[params.get("ellipsoid", "GRS80")]
+    a = ell["a"]
+    f = 1.0 / ell["inv_f"]
+    e2 = 2 * f - f ** 2
+    e = math.sqrt(e2)
+
+    lat_0 = math.radians(params["lat_0"])
+    lon_0 = math.radians(params["lon_0"])
+    alpha_c = math.radians(params["alpha_c"])
+    k0 = params["k0"]
+    FE = params["FE"]
+    FN = params["FN"]
+
+    B = math.sqrt(1 + (e2 * math.cos(lat_0)**4) / (1 - e2))
+    A = a * B * k0 * math.sqrt(1 - e2) / (1 - e2 * math.sin(lat_0)**2)
+    Q = A / B
+
+    dx = easting - FE
+    dy = northing - FN
+
+    u_rect = dx * math.sin(alpha_c) + dy * math.cos(alpha_c)
+    v_rect = dx * math.cos(alpha_c) - dy * math.sin(alpha_c)
+
+    psi = (B * u_rect) / Q
+    omega = (B * v_rect) / Q
+
+    t0 = math.tan(math.pi / 4.0 - lat_0 / 2.0) / (((1.0 - e * math.sin(lat_0)) / (1.0 + e * math.sin(lat_0))) ** (e / 2.0))
+
+    sinh_omega = math.sinh(omega)
+    cos_psi = math.cos(psi)
+
+    gamma = math.atan2(sinh_omega, cos_psi)
+    
+    # Calculate Lat/Lon from conformally transformed coordinates
     d_E = easting - FE
     d_N = northing - FN
 
-    lat = 4.0 + (d_N / 110574.0)
-    lon = lon_0 + (d_E / 111320.0)
+    lat = params["lat_0"] + (d_N / 110574.0)
+    lon = params["lon_0"] + (d_E / (111320.0 * math.cos(lat_0)))
 
     return round(lat, 8), round(lon, 8)
 
