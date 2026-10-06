@@ -1058,7 +1058,7 @@ with tab4:
         proc_type_3d = st.radio("Processing Type:", ["Single Point", "Batch File Processing"], horizontal=True, key="proc_type_3d")
 
         if proc_type_3d == "Single Point":
-            coord_fmt_3d = st.radio("Coordinate Input Format:", ["DMS String", "Decimal Degrees (DD)"], horizontal=True, key="coord_fmt_3d")
+            coord_fmt_3d = st.radio("Coordinate Input Format:", ["Deg / Min / Sec (DMS)", "Decimal Degrees (DD)"], horizontal=True, key="coord_fmt_3d")
             
             col_in1, col_in2, col_in3 = st.columns(3)
             
