@@ -1062,7 +1062,7 @@ with tab4:
             
             col_in1, col_in2, col_in3 = st.columns(3)
             
-            if coord_fmt_3d == "DMS String":
+            if coord_fmt_3d == "Deg / Min / Sec (DMS)":
                 with col_in1:
                     st.markdown("**Latitude**")
                     d_lat = st.number_input("Deg", value=1, key="trans_d_lat")
@@ -1084,7 +1084,7 @@ with tab4:
                 stn_name = st.text_input("Station Name", value="STN01", key="trans_stn_name")
 
             if st.button("⚡ Transform Coordinates", type="primary", use_container_width=True, key="btn_transform"):
-                if coord_fmt_3d == "DMS String":
+                if coord_fmt_3d == "Deg / Min / Sec (DMS)":
                     lat_in = dt.dms_to_deg(d_lat, m_lat, s_lat)
                     lon_in = dt.dms_to_deg(d_lon, m_lon, s_lon)
                     from_lat_str = f"{d_lat}° {m_lat}' {s_lat:.5f}\""
@@ -1097,7 +1097,7 @@ with tab4:
 
                 lat_out, lon_out, h_out = dt.bursa_wolf_transform(lat_in, lon_in, h_in, module_key)
                 
-                if coord_fmt_3d == "DMS String":
+                if coord_fmt_3d == "Deg / Min / Sec (DMS)":
                     out_d_lat, out_m_lat, out_s_lat = dt.deg_to_dms(lat_out)
                     out_d_lon, out_m_lon, out_s_lon = dt.deg_to_dms(lon_out)
                     to_lat_str = f"{out_d_lat}° {out_m_lat}' {out_s_lat:.5f}\""
@@ -1219,6 +1219,7 @@ with tab4:
         from_name, to_name = [x.strip() for x in module_title.split(" to ")]
         
         is_cassini = "Cassini" in module_title
+        is_rso = "RSO" in module_title or "BRSO" in module_title
 
         with col_p2:
             if is_cassini:
@@ -1226,6 +1227,38 @@ with tab4:
             else:
                 st.selectbox("State Selection :", ["Not Applicable"], disabled=True, key="proj_state_disabled")
                 selected_state = None
+
+        # --- Interactive RSO Parameter Configuration ---
+        if is_rso:
+            st.markdown("##### ⚙️ RSO Projection Parameters Configuration")
+            
+            default_rso_preset = "Peninsular Malaysia Geocentric RSO" if proj_region == "Peninsular Malaysia" else "East Malaysia Geocentric RSO"
+            if "BRSO" in module_title:
+                default_rso_preset = "BRSO Old (East Malaysia)"
+
+            use_custom_rso = st.checkbox("Custom RSO Projection Parameters", value=False, key="use_custom_rso")
+            
+            if use_custom_rso:
+                c_rso1, c_rso2, c_rso3 = st.columns(3)
+                rso_params_dict = dt.RSO_PARAMS[default_rso_preset]
+                with c_rso1:
+                    rso_lat0 = st.number_input("Latitude of Origin (deg)", value=float(rso_params_dict["lat_0"]), format="%.6f", key="rso_lat0")
+                    rso_lon0 = st.number_input("Central Meridian (deg)", value=float(rso_params_dict["lon_0"]), format="%.6f", key="rso_lon0")
+                with c_rso2:
+                    rso_alpha = st.number_input("Rectified Azimuth (alpha deg)", value=float(rso_params_dict["alpha_c"]), format="%.8f", key="rso_alpha")
+                    rso_k0 = st.number_input("Scale Factor (k0)", value=float(rso_params_dict["k0"]), format="%.6f", key="rso_k0")
+                with c_rso3:
+                    rso_fe = st.number_input("False Easting (m)", value=float(rso_params_dict["FE"]), format="%.3f", key="rso_fe")
+                    rso_fn = st.number_input("False Northing (m)", value=float(rso_params_dict["FN"]), format="%.3f", key="rso_fn")
+                
+                selected_rso_params = {
+                    "ellipsoid": rso_params_dict["ellipsoid"],
+                    "lat_0": rso_lat0, "lon_0": rso_lon0,
+                    "alpha_c": rso_alpha, "k0": rso_k0,
+                    "FE": rso_fe, "FN": rso_fn
+                }
+            else:
+                selected_rso_params = dt.RSO_PARAMS[default_rso_preset]
 
         proc_type_proj = st.radio("Processing Type:", ["Single Point", "Batch File Processing"], horizontal=True, key="proc_type_proj")
 
@@ -1271,7 +1304,7 @@ with tab4:
                     if is_cassini:
                         E, N = dt.latlon_to_cassini(lat_val, lon_val, selected_state)
                     else:
-                        E, N = dt.latlon_to_rso(lat_val, lon_val, is_sabah_sarawak=(proj_region != "Peninsular Malaysia"))
+                        E, N = dt.latlon_to_rso(lat_val, lon_val, custom_params=selected_rso_params)
                     
                     df_res = pd.DataFrame([{
                         "Station": stn_name_proj,
@@ -1284,7 +1317,7 @@ with tab4:
                     if is_cassini:
                         lat_val, lon_val = dt.cassini_to_latlon(in_easting, in_northing, selected_state)
                     else:
-                        lat_val, lon_val = dt.rso_to_latlon(in_easting, in_northing, is_sabah_sarawak=(proj_region != "Peninsular Malaysia"))
+                        lat_val, lon_val = dt.rso_to_latlon(in_easting, in_northing, custom_params=selected_rso_params)
                     
                     df_res = pd.DataFrame([{
                         "Station": stn_name_proj,
@@ -1329,14 +1362,14 @@ with tab4:
                                 if is_cassini:
                                     e, n = dt.latlon_to_cassini(val1, val2, selected_state)
                                 else:
-                                    e, n = dt.latlon_to_rso(val1, val2, is_sabah_sarawak=(proj_region != "Peninsular Malaysia"))
+                                    e, n = dt.latlon_to_rso(val1, val2, custom_params=selected_rso_params)
                                 res_c1.append(e)
                                 res_c2.append(n)
                             else:
                                 if is_cassini:
                                     lat, lon = dt.cassini_to_latlon(val1, val2, selected_state)
                                 else:
-                                    lat, lon = dt.rso_to_latlon(val1, val2, is_sabah_sarawak=(proj_region != "Peninsular Malaysia"))
+                                    lat, lon = dt.rso_to_latlon(val1, val2, custom_params=selected_rso_params)
                                 res_c1.append(lat)
                                 res_c2.append(lon)
 
