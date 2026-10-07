@@ -1,4 +1,5 @@
 import math
+from decimal import Decimal, ROUND_HALF_UP
 
 try:
     from pyproj import CRS, Transformer, Proj
@@ -101,6 +102,12 @@ CASSINI_ORIGINS = {
     "Terengganu": {"lat": 4.9458255, "lon": 102.8936125, "FN": 0.0, "FE": 0.0},
 }
 
+
+
+def round_half_up(value, decimals=3):
+    """Conventional half-up rounding for survey coordinate output."""
+    quantum = Decimal("1").scaleb(-decimals)
+    return float(Decimal(str(value)).quantize(quantum, rounding=ROUND_HALF_UP))
 
 def dms_to_deg(deg: int, minute: int, sec: float) -> float:
     """Converts Degrees, Minutes, Seconds to Decimal Degrees."""
@@ -319,7 +326,7 @@ def latlon_to_rso(lat_deg, lon_deg, rso_param_set="Peninsular Malaysia Geocentri
     if not (math.isfinite(easting) and math.isfinite(northing)):
         raise ValueError("RSO projection failed. Check latitude/longitude input order and projection parameters.")
 
-    return round(float(easting), 3), round(float(northing), 3)
+    return round_half_up(float(easting), 3), round_half_up(float(northing), 3)
 
 
 def rso_to_latlon(easting, northing, rso_param_set="Peninsular Malaysia Geocentric RSO", custom_params=None):
