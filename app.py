@@ -1228,75 +1228,16 @@ with tab4:
                 st.selectbox("State Selection :", ["Not Applicable"], disabled=True, key="proj_state_disabled")
                 selected_state = None
 
-        # --- Interactive RSO Parameter Configuration ---
+# Set default parameters in background without UI controls
         if is_rso:
-            st.markdown("##### ⚙️ RSO Projection Parameters Configuration")
-            
             default_rso_preset = "Peninsular Malaysia Geocentric RSO" if proj_region == "Peninsular Malaysia" else "East Malaysia Geocentric RSO"
             if "BRSO" in module_title:
                 default_rso_preset = "BRSO Old (East Malaysia)"
 
-            use_custom_rso = st.checkbox("Custom RSO Projection Parameters", value=False, key="use_custom_rso")
-            
             rso_params_dict = dt.RSO_PARAMS[default_rso_preset]
-
-            if proj_region == "Peninsular Malaysia" and "BRSO" not in module_title:
-                st.caption(
-                    "Standard definition: GDM2000 (EPSG:4742) ↔ GDM2000 / Peninsula RSO "
-                    "(EPSG:3375), Hotine Oblique Mercator (Variant A)."
-                )
-
-            if use_custom_rso:
-                c_rso1, c_rso2, c_rso3 = st.columns(3)
-                with c_rso1:
-                    rso_lat0 = st.number_input(
-                        "Latitude of Projection Centre (deg)",
-                        value=float(rso_params_dict["lat_0"]), format="%.9f", key="rso_lat0"
-                    )
-                    rso_lon0 = st.number_input(
-                        "Longitude of Projection Centre (deg)",
-                        value=float(rso_params_dict["lon_0"]), format="%.9f", key="rso_lon0"
-                    )
-                with c_rso2:
-                    rso_alpha = st.number_input(
-                        "Azimuth at Projection Centre (deg)",
-                        value=float(rso_params_dict["alpha_c"]), format="%.12f", key="rso_alpha"
-                    )
-                    rso_gamma = st.number_input(
-                        "Rectified-to-Skew Grid Angle (deg)",
-                        value=float(rso_params_dict.get("gamma_c", rso_params_dict["alpha_c"])),
-                        format="%.12f", key="rso_gamma"
-                    )
-                    rso_k0 = st.number_input(
-                        "Scale Factor at Projection Centre (k0)",
-                        value=float(rso_params_dict["k0"]), format="%.8f", key="rso_k0"
-                    )
-                with c_rso3:
-                    rso_fe = st.number_input(
-                        "False Easting (m)", value=float(rso_params_dict["FE"]),
-                        format="%.3f", key="rso_fe"
-                    )
-                    rso_fn = st.number_input(
-                        "False Northing (m)", value=float(rso_params_dict["FN"]),
-                        format="%.3f", key="rso_fn"
-                    )
-
-                selected_rso_params = {
-                    "ellipsoid": rso_params_dict["ellipsoid"],
-                    "lat_0": rso_lat0,
-                    "lon_0": rso_lon0,
-                    "alpha_c": rso_alpha,
-                    "gamma_c": rso_gamma,
-                    "k0": rso_k0,
-                    "FE": rso_fe,
-                    "FN": rso_fn,
-                    "no_uoff": True,
-                }
-            else:
-                # None means datum_transform.py can use the official EPSG definition directly.
-                selected_rso_params = None if (
-                    default_rso_preset == "Peninsular Malaysia Geocentric RSO"
-                ) else rso_params_dict
+            selected_rso_params = None if (default_rso_preset == "Peninsular Malaysia Geocentric RSO") else rso_params_dict
+        else:
+            selected_rso_params = None
 
         proc_type_proj = st.radio("Processing Type:", ["Single Point", "Batch File Processing"], horizontal=True, key="proc_type_proj")
 
