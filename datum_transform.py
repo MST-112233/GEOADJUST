@@ -1,5 +1,14 @@
 import math
 
+try:
+    from pyproj import CRS, Transformer
+except ImportError as exc:
+    CRS = None
+    Transformer = None
+    _PYPROJ_IMPORT_ERROR = exc
+else:
+    _PYPROJ_IMPORT_ERROR = None
+
 # Refer to GDTS 4.0 & PKPUP 3/2021
 # Ellipsoid Parameters (a = Semi-major axis (m), inv_f = Inverse Flattening 1/f)
 ELLIPSOIDS = {
@@ -32,14 +41,19 @@ TRANSFORMATION_PARAMS = {
 # RSO Projection Parameters (EPSG 3375, EPSG 3376, etc.)
 RSO_PARAMS = {
     "Peninsular Malaysia Geocentric RSO": {
+        # GDM2000 / Peninsula RSO (EPSG:3375)
+        # Hotine Oblique Mercator (Variant A), GRS 1980
         "ellipsoid": "GRS80",
-        "lat_0": 4.0,           # Center latitude (deg)
-        "lon_0": 102.25,        # Center longitude (deg)
-        "alpha_c": 53.13010236111111, # Rectified Azimuth / Skew Angle (deg)
-        "k0": 0.99984,          # Scale factor
-        "FE": 804182.358,       # False Easting (m)
-        "FN": 0.0,              # False Northing (m)
-        "gamma_c": 53.13010236111111 # Skew azimuth at projection center
+        "lat_0": 4.0,                    # Latitude of projection centre (deg)
+        "lon_0": 102.25,                 # Longitude of projection centre (deg)
+        "alpha_c": 323.025796466667,     # Azimuth at projection centre (deg)
+        "gamma_c": 323.130102361111,     # Angle from rectified to skew grid (deg)
+        "k0": 0.99984,                   # Scale factor at projection centre
+        "FE": 804671.0,                  # False Easting (m)
+        "FN": 0.0,                       # False Northing (m)
+        "epsg_geographic": 4742,         # GDM2000
+        "epsg_projected": 3375,          # GDM2000 / Peninsula RSO
+        "no_uoff": True,                 # EPSG Hotine Oblique Mercator Variant A
     },
     "East Malaysia Geocentric RSO": {
         "ellipsoid": "GRS80",
@@ -170,107 +184,101 @@ def bursa_wolf_transform(lat_deg: float, lon_deg: float, h: float, module_key: s
     return lat_out, lon_out, h_out
 
 
+def _require_pyproj():
+    """Ensure the standards-based projection engine is available."""
+    if CRS is None or Transformer is None:
+        raise ImportError(
+            "pyproj is required for RSO projection. Install it with: pip install pyproj"
+        ) from _PYPROJ_IMPORT_ERROR
+
+
+def _build_rso_crs(params):
+    """
+    Build a Hotine Oblique Mercator (Variant A) CRS from GEOADJUST RSO parameters.
+
+    For the standard Peninsular Malaysia preset this is equivalent to EPSG:3375.
+    The +no_uoff flag is essential for EPSG method 9812 (Hotine Oblique Mercator A).
+    """
+    _require_pyproj()
+    ellipsoid = params.get("ellipsoid", "GRS80")
+    if ellipsoid == "GRS80":
+        ellps_token = "GRS80"
+    elif ellipsoid == "WGS84":
+        ellps_token = "WGS84"
+    else:
+        ell = ELLIPSOIDS[ellipsoid]
+        a = ell["a"]
+        rf = ell["inv_f"]
+        ellps_token = None
+
+    parts = [
+        "+proj=omerc",
+        "+no_uoff",
+        f"+lat_0={params['lat_0']}",
+        f"+lonc={params['lon_0']}",
+        f"+alpha={params['alpha_c']}",
+        f"+gamma={params.get('gamma_c', params['alpha_c'])}",
+        f"+k={params['k0']}",
+        f"+x_0={params['FE']}",
+        f"+y_0={params['FN']}",
+    ]
+    if ellps_token:
+        parts.append(f"+ellps={ellps_token}")
+    else:
+        parts.extend([f"+a={a}", f"+rf={rf}"])
+    parts.extend(["+units=m", "+no_defs", "+type=crs"])
+    return CRS.from_proj4(" ".join(parts))
+
+
+def _rso_transformers(rso_param_set="Peninsular Malaysia Geocentric RSO", custom_params=None):
+    """Return forward and inverse pyproj transformers for an RSO definition."""
+    _require_pyproj()
+    params = custom_params if custom_params else RSO_PARAMS.get(
+        rso_param_set, RSO_PARAMS["Peninsular Malaysia Geocentric RSO"]
+    )
+
+    # For the validated standard Peninsular Malaysia definition, use EPSG directly.
+    if custom_params is None and rso_param_set == "Peninsular Malaysia Geocentric RSO":
+        geographic_crs = CRS.from_epsg(4742)   # GDM2000
+        projected_crs = CRS.from_epsg(3375)    # GDM2000 / Peninsula RSO
+    else:
+        projected_crs = _build_rso_crs(params)
+        # RSO presets in GEOADJUST are geocentric/GDM2000 unless explicitly old datum.
+        if params.get("ellipsoid", "GRS80") == "GRS80":
+            geographic_crs = CRS.from_epsg(4742)
+        else:
+            ell = ELLIPSOIDS[params["ellipsoid"]]
+            geographic_crs = CRS.from_proj4(
+                f"+proj=longlat +a={ell['a']} +rf={ell['inv_f']} +no_defs +type=crs"
+            )
+
+    forward = Transformer.from_crs(geographic_crs, projected_crs, always_xy=True)
+    inverse = Transformer.from_crs(projected_crs, geographic_crs, always_xy=True)
+    return forward, inverse
+
+
 def latlon_to_rso(lat_deg, lon_deg, rso_param_set="Peninsular Malaysia Geocentric RSO", custom_params=None):
     """
-    Forward RSO Projection (Lat/Lon -> Easting/Northing) using Hotine Oblique Mercator / RSO equations.
+    Forward RSO projection: geographical latitude/longitude -> Easting/Northing.
+
+    Standard Peninsular Malaysia mode uses:
+      GDM2000 (EPSG:4742) -> GDM2000 / Peninsula RSO (EPSG:3375)
+      Hotine Oblique Mercator (Variant A).
     """
-    params = custom_params if custom_params else RSO_PARAMS.get(rso_param_set, RSO_PARAMS["Peninsular Malaysia Geocentric RSO"])
-    
-    ell = ELLIPSOIDS[params.get("ellipsoid", "GRS80")]
-    a = ell["a"]
-    f = 1.0 / ell["inv_f"]
-    e2 = 2 * f - f ** 2
-    e = math.sqrt(e2)
-
-    lat_0 = math.radians(params["lat_0"])
-    lon_0 = math.radians(params["lon_0"])
-    alpha_c = math.radians(params["alpha_c"])
-    k0 = params["k0"]
-    FE = params["FE"]
-    FN = params["FN"]
-
-    phi = math.radians(lat_deg)
-    lam = math.radians(lon_deg)
-
-    B = math.sqrt(1 + (e2 * math.cos(lat_0)**4) / (1 - e2))
-    A = a * B * k0 * math.sqrt(1 - e2) / (1 - e2 * math.sin(lat_0)**2)
-
-    t0 = math.tan(math.pi / 4.0 - lat_0 / 2.0) / (((1.0 - e * math.sin(lat_0)) / (1.0 + e * math.sin(lat_0))) ** (e / 2.0))
-    t = math.tan(math.pi / 4.0 - phi / 2.0) / (((1.0 - e * math.sin(phi)) / (1.0 + e * math.sin(phi))) ** (e / 2.0))
-
-    D = B * math.sqrt(1 - e2) / (math.cos(lat_0) * math.sqrt(1 - e2 * math.sin(lat_0)**2))
-    D2 = D**2 if D >= 1.0 else 1.0
-    F = D + math.sqrt(max(0.0, D2 - 1.0))
-    E_val = F * (t0 ** B)
-    H = E_val / (t ** B)
-    L = (H - 1.0 / H) / 2.0
-    
-    d_lon = lam - lon_0
-    v = (A / B) * math.atanh(math.sin(alpha_c) * (L * math.sin(B * d_lon) - math.sinh(B * d_lon * 0.0)) / (math.cosh(B * d_lon) + L * 0.0) if False else math.sin(alpha_c) * (H - 1/H)/(2*math.cosh(B*d_lon)) )
-    
-    # Standard Hotine / RSO Rectified Formulation
-    Q = A / B
-    gamma = math.asin(math.sin(alpha_c) / math.cosh(B * math.log(t0 / t)))
-    
-    u_rect = (Q / B) * math.atan2(math.tan(gamma), math.cos(alpha_c))
-    v_rect = (Q / B) * math.atanh(math.sin(alpha_c) * math.tanh(B * math.log(t0 / t)))
-
-    u_prime = u_rect + (lam - lon_0) * 0.0
-    
-    Easting = FE + u_rect * math.sin(alpha_c) + v_rect * math.cos(alpha_c)
-    Northing = FN + u_rect * math.cos(alpha_c) - v_rect * math.sin(alpha_c)
-
-    return round(Easting, 3), round(Northing, 3)
+    forward, _ = _rso_transformers(rso_param_set, custom_params)
+    easting, northing = forward.transform(float(lon_deg), float(lat_deg))
+    return round(float(easting), 3), round(float(northing), 3)
 
 
 def rso_to_latlon(easting, northing, rso_param_set="Peninsular Malaysia Geocentric RSO", custom_params=None):
     """
-    Inverse RSO Projection (Easting/Northing -> Lat/Lon) using Hotine Oblique Mercator / RSO equations.
+    Inverse RSO projection: Easting/Northing -> geographical latitude/longitude.
+
+    Standard Peninsular Malaysia mode uses EPSG:3375 -> EPSG:4742.
     """
-    params = custom_params if custom_params else RSO_PARAMS.get(rso_param_set, RSO_PARAMS["Peninsular Malaysia Geocentric RSO"])
-
-    ell = ELLIPSOIDS[params.get("ellipsoid", "GRS80")]
-    a = ell["a"]
-    f = 1.0 / ell["inv_f"]
-    e2 = 2 * f - f ** 2
-    e = math.sqrt(e2)
-
-    lat_0 = math.radians(params["lat_0"])
-    lon_0 = math.radians(params["lon_0"])
-    alpha_c = math.radians(params["alpha_c"])
-    k0 = params["k0"]
-    FE = params["FE"]
-    FN = params["FN"]
-
-    B = math.sqrt(1 + (e2 * math.cos(lat_0)**4) / (1 - e2))
-    A = a * B * k0 * math.sqrt(1 - e2) / (1 - e2 * math.sin(lat_0)**2)
-    Q = A / B
-
-    dx = easting - FE
-    dy = northing - FN
-
-    u_rect = dx * math.sin(alpha_c) + dy * math.cos(alpha_c)
-    v_rect = dx * math.cos(alpha_c) - dy * math.sin(alpha_c)
-
-    psi = (B * u_rect) / Q
-    omega = (B * v_rect) / Q
-
-    t0 = math.tan(math.pi / 4.0 - lat_0 / 2.0) / (((1.0 - e * math.sin(lat_0)) / (1.0 + e * math.sin(lat_0))) ** (e / 2.0))
-
-    sinh_omega = math.sinh(omega)
-    cos_psi = math.cos(psi)
-
-    gamma = math.atan2(sinh_omega, cos_psi)
-    
-    # Calculate Lat/Lon from conformally transformed coordinates
-    d_E = easting - FE
-    d_N = northing - FN
-
-    lat = params["lat_0"] + (d_N / 110574.0)
-    lon = params["lon_0"] + (d_E / (111320.0 * math.cos(lat_0)))
-
-    return round(lat, 8), round(lon, 8)
-
+    _, inverse = _rso_transformers(rso_param_set, custom_params)
+    lon_deg, lat_deg = inverse.transform(float(easting), float(northing))
+    return round(float(lat_deg), 8), round(float(lon_deg), 8)
 
 def latlon_to_cassini(lat_deg, lon_deg, state):
     """Geocentric Cassini-Soldner Forward Projection (Lat/Lon -> Easting/Northing)."""
