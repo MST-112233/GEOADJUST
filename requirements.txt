@@ -5,3 +5,4 @@ streamlit-autorefresh
 streamlit-js-eval
 folium
 streamlit-folium
+pyproj>=3.6
