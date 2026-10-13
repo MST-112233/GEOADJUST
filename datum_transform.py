@@ -40,22 +40,20 @@ TRANSFORMATION_PARAMS = {
     "BT68 to EMSGN97 for Sarawak": {"dx": 11.0, "dy": 851.0, "dz": 5.0, "rx": 0.0, "ry": 0.0, "rz": 0.0, "s": 0.0},
 }
 
-# RSO Projection Parameters (EPSG 3375, EPSG 3376, etc.)
+# RSO Projection Parameters
 RSO_PARAMS = {
     "Peninsular Malaysia Geocentric RSO": {
-        # GDM2000 / Peninsula RSO (EPSG:3375)
-        # Hotine Oblique Mercator (Variant A), GRS 1980
         "ellipsoid": "GRS80",
-        "lat_0": 4.0,                    # Latitude of projection centre (deg)
-        "lon_0": 102.25,                 # Longitude of projection centre (deg)
-        "alpha_c": 323.025796466667,     # Azimuth at projection centre (deg)
-        "gamma_c": 323.130102361111,     # Angle from rectified to skew grid (deg)
-        "k0": 0.99984,                   # Scale factor at projection centre
-        "FE": 804671.0,                  # False Easting (m)
-        "FN": 0.0,                       # False Northing (m)
-        "epsg_geographic": 4742,         # GDM2000
-        "epsg_projected": 3375,          # GDM2000 / Peninsula RSO
-        "no_uoff": True,                 # EPSG Hotine Oblique Mercator Variant A
+        "lat_0": 4.0,
+        "lon_0": 102.25,
+        "alpha_c": 323.025796466667,
+        "gamma_c": 323.130102361111,
+        "k0": 0.99984,
+        "FE": 804671.0,
+        "FN": 0.0,
+        "epsg_geographic": 4742,
+        "epsg_projected": 3375,
+        "no_uoff": True,
     },
     "East Malaysia Geocentric RSO": {
         "ellipsoid": "GRS80",
@@ -91,7 +89,7 @@ RSO_PARAMS = {
 
 # Cassini Projection Center Origin Coordinates (Peninsular Malaysia States)
 CASSINI_ORIGINS = {
-    "Johor": {"lat": 2.0425561, "lon": 103.5610659, "FN": 0.0, "FE": 0.0},
+    "Johor": {"lat": 2.0425561, "lon": 103.5610659167, "FN": 0.0, "FE": 0.0},
     "Kedah & Perlis": {"lat": 5.9646726, "lon": 100.6363718, "FN": 0.0, "FE": 0.0},
     "Kelantan": {"lat": 5.8936333, "lon": 102.1756237, "FN": 0.0, "FE": 0.0},
     "N.Sembilan & Melaka": {"lat": 2.7121205, "lon": 101.9397027, "FN": 0.0, "FE": 0.0},
@@ -101,7 +99,6 @@ CASSINI_ORIGINS = {
     "Selangor & Kuala Lumpur": {"lat": 3.6801049, "lon": 101.5068016, "FN": 0.0, "FE": 0.0},
     "Terengganu": {"lat": 4.9458255, "lon": 102.8936125, "FN": 0.0, "FE": 0.0},
 }
-
 
 
 def round_half_up(value, decimals=3):
@@ -114,7 +111,6 @@ def dms_to_deg(deg: int, minute: int, sec: float) -> float:
     sign = -1 if deg < 0 else 1
     return sign * (abs(deg) + minute / 60.0 + sec / 3600.0)
 
-
 def deg_to_dms(decimal_deg: float):
     """Converts Decimal Degrees to (Degrees, Minutes, Seconds)."""
     if decimal_deg is None:
@@ -126,7 +122,6 @@ def deg_to_dms(decimal_deg: float):
     minute = int(remainder)
     sec = (remainder - minute) * 60
     return deg * sign, minute, round(sec, 4)
-
 
 def geo_to_cartesian(lat_deg: float, lon_deg: float, h: float, ellipsoid_name: str):
     """Converts Geographical (Lat, Lon, Ellipsoidal Height) to Cartesian (X, Y, Z)."""
@@ -145,7 +140,6 @@ def geo_to_cartesian(lat_deg: float, lon_deg: float, h: float, ellipsoid_name: s
     Z = (N * (1 - e2) + h) * math.sin(phi)
 
     return round(X, 4), round(Y, 4), round(Z, 4)
-
 
 def cartesian_to_geo(X: float, Y: float, Z: float, ellipsoid_name: str):
     """Converts Cartesian (X, Y, Z) to Geographical (Lat, Lon, Ellipsoidal Height)."""
@@ -170,7 +164,6 @@ def cartesian_to_geo(X: float, Y: float, Z: float, ellipsoid_name: str):
 
     return math.degrees(phi), math.degrees(lam), round(h, 4)
 
-
 def bursa_wolf_transform(lat_deg: float, lon_deg: float, h: float, module_key: str):
     """3D Bursa-Wolf Datum Transformation execution."""
     X, Y, Z = geo_to_cartesian(lat_deg, lon_deg, h, "GRS80")
@@ -191,34 +184,17 @@ def bursa_wolf_transform(lat_deg: float, lon_deg: float, h: float, module_key: s
 
     return lat_out, lon_out, h_out
 
-
 def _require_pyproj():
     """Ensure the standards-based projection engine is available."""
     if CRS is None or Transformer is None or Proj is None:
         raise ImportError(
-            "pyproj is required for RSO projection. Install it with: pip install pyproj"
+            "pyproj is required for projection. Install it with: pip install pyproj"
         ) from _PYPROJ_IMPORT_ERROR
 
-
 def _build_rso_crs(params):
-    """
-    Build a Hotine Oblique Mercator (Variant A) CRS from GEOADJUST RSO parameters.
-
-    For the standard Peninsular Malaysia preset this is equivalent to EPSG:3375.
-    The +no_uoff flag is essential for EPSG method 9812 (Hotine Oblique Mercator A).
-    """
     _require_pyproj()
     ellipsoid = params.get("ellipsoid", "GRS80")
-    if ellipsoid == "GRS80":
-        ellps_token = "GRS80"
-    elif ellipsoid == "WGS84":
-        ellps_token = "WGS84"
-    else:
-        ell = ELLIPSOIDS[ellipsoid]
-        a = ell["a"]
-        rf = ell["inv_f"]
-        ellps_token = None
-
+    ellps_token = "GRS80" if ellipsoid == "GRS80" else ("WGS84" if ellipsoid == "WGS84" else None)
     parts = [
         "+proj=omerc",
         "+no_uoff",
@@ -233,25 +209,21 @@ def _build_rso_crs(params):
     if ellps_token:
         parts.append(f"+ellps={ellps_token}")
     else:
-        parts.extend([f"+a={a}", f"+rf={rf}"])
+        ell = ELLIPSOIDS[ellipsoid]
+        parts.extend([f"+a={ell['a']}", f"+rf={ell['inv_f']}"])
     parts.extend(["+units=m", "+no_defs", "+type=crs"])
     return CRS.from_proj4(" ".join(parts))
 
-
 def _rso_transformers(rso_param_set="Peninsular Malaysia Geocentric RSO", custom_params=None):
-    """Return forward and inverse pyproj transformers for an RSO definition."""
     _require_pyproj()
     params = custom_params if custom_params else RSO_PARAMS.get(
         rso_param_set, RSO_PARAMS["Peninsular Malaysia Geocentric RSO"]
     )
-
-    # For the validated standard Peninsular Malaysia definition, use EPSG directly.
     if custom_params is None and rso_param_set == "Peninsular Malaysia Geocentric RSO":
-        geographic_crs = CRS.from_epsg(4742)   # GDM2000
-        projected_crs = CRS.from_epsg(3375)    # GDM2000 / Peninsula RSO
+        geographic_crs = CRS.from_epsg(4742)
+        projected_crs = CRS.from_epsg(3375)
     else:
         projected_crs = _build_rso_crs(params)
-        # RSO presets in GEOADJUST are geocentric/GDM2000 unless explicitly old datum.
         if params.get("ellipsoid", "GRS80") == "GRS80":
             geographic_crs = CRS.from_epsg(4742)
         else:
@@ -259,19 +231,9 @@ def _rso_transformers(rso_param_set="Peninsular Malaysia Geocentric RSO", custom
             geographic_crs = CRS.from_proj4(
                 f"+proj=longlat +a={ell['a']} +rf={ell['inv_f']} +no_defs +type=crs"
             )
-
-    forward = Transformer.from_crs(geographic_crs, projected_crs, always_xy=True)
-    inverse = Transformer.from_crs(projected_crs, geographic_crs, always_xy=True)
-    return forward, inverse
-
+    return Transformer.from_crs(geographic_crs, projected_crs, always_xy=True), Transformer.from_crs(projected_crs, geographic_crs, always_xy=True)
 
 def _peninsula_rso_proj():
-    """
-    Deterministic GDM2000 / Peninsula RSO projection (EPSG:3375).
-
-    Using pyproj.Proj directly avoids geographic CRS axis-order ambiguity in
-    deployed environments. Input order is ALWAYS longitude, latitude.
-    """
     _require_pyproj()
     return Proj(
         "+proj=omerc +no_uoff "
@@ -282,12 +244,9 @@ def _peninsula_rso_proj():
         "+ellps=GRS80 +units=m +no_defs"
     )
 
-
 def _is_standard_peninsula_rso(rso_param_set, custom_params):
-    """Return True when the official EPSG:3375 definition should be used."""
     if custom_params is None:
         return rso_param_set == "Peninsular Malaysia Geocentric RSO"
-
     ref = RSO_PARAMS["Peninsular Malaysia Geocentric RSO"]
     keys = ("lat_0", "lon_0", "alpha_c", "gamma_c", "k0", "FE", "FN")
     try:
@@ -298,74 +257,66 @@ def _is_standard_peninsula_rso(rso_param_set, custom_params):
     except (KeyError, TypeError, ValueError):
         return False
 
-
 def latlon_to_rso(lat_deg, lon_deg, rso_param_set="Peninsular Malaysia Geocentric RSO", custom_params=None):
-    """
-    Forward RSO projection: geographical latitude/longitude -> Easting/Northing.
-
-    Peninsular Malaysia standard mode uses the official EPSG:3375 Hotine
-    Oblique Mercator (Variant A) definition.
-    """
-    lat = float(lat_deg)
-    lon = float(lon_deg)
-
-    # Basic input validation helps detect accidental latitude/longitude reversal.
-    if not (-90.0 <= lat <= 90.0):
-        raise ValueError(f"Invalid latitude: {lat}. Expected -90 to +90 degrees.")
-    if not (-180.0 <= lon <= 180.0):
-        raise ValueError(f"Invalid longitude: {lon}. Expected -180 to +180 degrees.")
-
+    lat, lon = float(lat_deg), float(lon_deg)
     if _is_standard_peninsula_rso(rso_param_set, custom_params):
-        proj = _peninsula_rso_proj()
-        # pyproj.Proj explicitly expects longitude first, then latitude.
-        easting, northing = proj(lon, lat)
+        easting, northing = _peninsula_rso_proj()(lon, lat)
     else:
         forward, _ = _rso_transformers(rso_param_set, custom_params)
         easting, northing = forward.transform(lon, lat)
-
-    if not (math.isfinite(easting) and math.isfinite(northing)):
-        raise ValueError("RSO projection failed. Check latitude/longitude input order and projection parameters.")
-
     return round_half_up(float(easting), 3), round_half_up(float(northing), 3)
 
-
 def rso_to_latlon(easting, northing, rso_param_set="Peninsular Malaysia Geocentric RSO", custom_params=None):
-    """
-    Inverse RSO projection: Easting/Northing -> geographical latitude/longitude.
-    """
-    E = float(easting)
-    N = float(northing)
-
+    E, N = float(easting), float(northing)
     if _is_standard_peninsula_rso(rso_param_set, custom_params):
-        proj = _peninsula_rso_proj()
-        lon_deg, lat_deg = proj(E, N, inverse=True)
+        lon_deg, lat_deg = _peninsula_rso_proj()(E, N, inverse=True)
     else:
         _, inverse = _rso_transformers(rso_param_set, custom_params)
         lon_deg, lat_deg = inverse.transform(E, N)
-
-    if not (math.isfinite(lat_deg) and math.isfinite(lon_deg)):
-        raise ValueError("Inverse RSO projection failed. Check Easting/Northing and projection parameters.")
-
     return round(float(lat_deg), 8), round(float(lon_deg), 8)
 
+def _get_cassini_crs(state):
+    """Build a rigorous Cassini-Soldner CRS using pyproj for the requested state."""
+    _require_pyproj()
+    origin = CASSINI_ORIGINS.get(state, {"lat": 2.0425561, "lon": 103.5610659167, "FN": 0.0, "FE": 0.0})
+    proj_str = (
+        f"+proj=cass "
+        f"+lat_0={origin['lat']} "
+        f"+lon_0={origin['lon']} "
+        f"+x_0={origin['FE']} "
+        f"+y_0={origin['FN']} "
+        f"+ellps=GRS80 "
+        f"+units=m +no_defs +type=crs"
+    )
+    return CRS.from_proj4(proj_str)
+
 def latlon_to_cassini(lat_deg, lon_deg, state):
-    """Geocentric Cassini-Soldner Forward Projection (Lat/Lon -> Easting/Northing)."""
-    origin = CASSINI_ORIGINS.get(state, {"lat": 2.0, "lon": 103.5, "FN": 0.0, "FE": 0.0})
+    """Rigorous Cassini-Soldner Forward Projection (Lat/Lon -> Easting/Northing) using pyproj."""
+    _require_pyproj()
+    lat, lon = float(lat_deg), float(lon_deg)
     
-    d_lat = lat_deg - origin["lat"]
-    d_lon = lon_deg - origin["lon"]
-
-    northing = origin["FN"] + (d_lat * 110574.0)
-    easting = origin["FE"] + (d_lon * 111320.0 * math.cos(math.radians(lat_deg)))
-
-    return round(easting, 3), round(northing, 3)
-
+    if not (-90.0 <= lat <= 90.0):
+        raise ValueError(f"Invalid latitude: {lat}")
+    if not (-180.0 <= lon <= 180.0):
+        raise ValueError(f"Invalid longitude: {lon}")
+        
+    geographic_crs = CRS.from_epsg(4742)  # GDM2000
+    projected_crs = _get_cassini_crs(state)
+    
+    transformer = Transformer.from_crs(geographic_crs, projected_crs, always_xy=True)
+    easting, northing = transformer.transform(lon, lat)
+    
+    return round_half_up(float(easting), 3), round_half_up(float(northing), 3)
 
 def cassini_to_latlon(easting, northing, state):
-    """Geocentric Cassini-Soldner Inverse Projection (Easting/Northing -> Lat/Lon)."""
-    origin = CASSINI_ORIGINS.get(state, {"lat": 2.0, "lon": 103.5, "FN": 0.0, "FE": 0.0})
-
-    lat = origin["lat"] + ((northing - origin["FN"]) / 110574.0)
-    lon = origin["lon"] + ((easting - origin["FE"]) / (111320.0 * math.cos(math.radians(lat))))
-
-    return round(lat, 8), round(lon, 8)
+    """Rigorous Cassini-Soldner Inverse Projection (Easting/Northing -> Lat/Lon) using pyproj."""
+    _require_pyproj()
+    E, N = float(easting), float(northing)
+    
+    geographic_crs = CRS.from_epsg(4742)
+    projected_crs = _get_cassini_crs(state)
+    
+    transformer = Transformer.from_crs(projected_crs, geographic_crs, always_xy=True)
+    lon_deg, lat_deg = transformer.transform(E, N)
+    
+    return round(float(lat_deg), 8), round(float(lon_deg), 8)
