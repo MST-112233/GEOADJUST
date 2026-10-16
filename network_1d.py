@@ -1,23 +1,32 @@
 import numpy as np
 import pandas as pd
+from scipy.stats import chi2
 
 def adjust_1d_network(df: pd.DataFrame, bm_name: str, bm_height: float) -> dict:
     """
     MATLAB-Aligned Parametric 1D Least Squares Leveling Network Adjustment Engine.
-    
-    Formulation:
-      L + V = A * X
-      V = A * X - L
-      X = (A' * P * A) \ (A' * P * L)
+    Supports Backsight (BS), Foresight (FS), Distance, and Standard Deviation inputs.
     """
     df = df.copy()
 
-    # Dynamic column indexing
+    # Dynamic column identification
+    bs_col = next((c for c in df.columns if 'back' in c.lower() or c.lower() == 'bs'), None)
+    fs_col = next((c for c in df.columns if 'fore' in c.lower() or c.lower() == 'fs'), None)
+    dh_col = next((c for c in df.columns if 'diff' in c.lower() or 'dh' in c.lower() or 'delta' in c.lower()), None)
+    dist_col = next((c for c in df.columns if 'dist' in c.lower() or c.lower() == 'd'), None)
+    std_col = next((c for c in df.columns if 'std' in c.lower() or 'sigma' in c.lower() or 'error' in c.lower()), None)
+
     from_col = df.columns[0]
     to_col = df.columns[1]
-    dh_col = df.columns[2]
-    dist_col = df.columns[3] if len(df.columns) > 3 else None
-    std_col = df.columns[4] if len(df.columns) > 4 else None
+
+    # Compute dH if BS and FS are provided
+    if bs_col and fs_col:
+        df['Computed_dH'] = pd.to_numeric(df[bs_col], errors='coerce') - pd.to_numeric(df[fs_col], errors='coerce')
+        obs_dh_col = 'Computed_dH'
+    elif dh_col:
+        obs_dh_col = dh_col
+    else:
+        obs_dh_col = df.columns[2]
 
     # Clean station names
     df[from_col] = df[from_col].astype(str).str.strip()
@@ -39,93 +48,90 @@ def adjust_1d_network(df: pd.DataFrame, bm_name: str, bm_height: float) -> dict:
 
     stn_idx = {name: i for i, name in enumerate(unknown_stations)}
 
-    # Initialize matrices
     A = np.zeros((num_obs, num_unknowns), dtype=np.float64)
-    L = pd.to_numeric(df[dh_col], errors='coerce').values.astype(np.float64)
+    L = pd.to_numeric(df[obs_dh_col], errors='coerce').values.astype(np.float64)
     P = np.eye(num_obs, dtype=np.float64)
 
-    # Build A matrix, L vector, and P matrix
     for i in range(num_obs):
         from_stn = df.iloc[i][from_col]
         to_stn = df.iloc[i][to_col]
 
-        # Design matrix entries (+1 for target, -1 for origin)
         if from_stn in stn_idx:
             A[i, stn_idx[from_stn]] = -1.0
         else:
-            L[i] += bm_height  # Benchmark fixed reference adjustment
+            L[i] += bm_height
 
         if to_stn in stn_idx:
             A[i, stn_idx[to_stn]] = 1.0
         else:
             L[i] -= bm_height
 
-        # Weighting scheme (Matching MATLAB conventions: P = 1 / sigma^2 or P = 1 / Distance)
         if std_col and pd.notnull(df.iloc[i][std_col]):
             val = float(df.iloc[i][std_col])
             if val > 0:
-                std_m = val / 1000.0  # Convert mm to m
+                std_m = val / 1000.0
                 P[i, i] = 1.0 / (std_m ** 2)
         elif dist_col and pd.notnull(df.iloc[i][dist_col]):
             val = float(df.iloc[i][dist_col])
             if val > 0:
-                P[i, i] = 1.0 / val  # Weight inversely proportional to distance (km)
+                P[i, i] = 1.0 / val
 
-    # Normal Equations: N = A' * P * A, U = A' * P * L
     N = A.T @ P @ A
     U = A.T @ P @ L
 
-    # Matrix Rank & Singularity Check
     cond_num = np.linalg.cond(N)
     if cond_num > 1e12:
-        raise ValueError(f"Ill-conditioned Normal Matrix (Condition No: {cond_num:.2e}). Check for unlinked stations or missing benchmark constraints.")
+        raise ValueError(f"Ill-conditioned Normal Matrix (Condition No: {cond_num:.2e}). Check benchmark constraints.")
 
-    # MATLAB-equivalent solver: np.linalg.lstsq (SVD-based QR decomposition equivalent)
     X, _, _, _ = np.linalg.lstsq(N, U, rcond=None)
-    
-    # Precise Covariance Matrix Inverse
     Qxx = np.linalg.pinv(N)
-
-    # Residuals vector: V = A*X - L
     V = (A @ X) - L
 
-    # Reference Variance: s0^2 = (V' * P * V) / dof
     vTpv = float(V.T @ P @ V)
     sigma0_sq = vTpv / dof if dof > 0 else 0.0
     sigma0 = np.sqrt(sigma0_sq)
-
-    # Standard errors of parameters: sigma_x = sigma0 * sqrt(diag(Qxx))
     std_errors = np.sqrt(np.diag(Qxx) * (sigma0_sq if dof > 0 else 1.0))
 
-    # Construct Station Output DataFrame
-    stations_list = []
-    # Benchmark entry
-    stations_list.append({
+    # Chi-Square Test (95% Confidence)
+    alpha = 0.05
+    if dof > 0:
+        chi2_low = chi2.ppf(alpha / 2, dof)
+        chi2_high = chi2.ppf(1 - alpha / 2, dof)
+        chi2_status = "Passed" if chi2_low <= vTpv <= chi2_high else "Failed"
+    else:
+        chi2_status = "N/A (DOF=0)"
+
+    observed_closure = float(np.sum(L))
+    adjusted_closure = 0.000
+
+    # Stations Output DataFrame
+    stations_list = [{
         "Station": bm_name,
-        "Adjusted Height (m)": float(np.round(bm_height, 5)),
-        "Std Dev (mm)": 0.0,
-        "Status": "Fixed Datum"
-    })
-    # Unknown stations entries
+        "Adjusted RL (m)": float(np.round(bm_height, 5)),
+        "Std. Error (m)": 0.0,
+        "Status": "Known Point"
+    }]
     for s_name, idx in stn_idx.items():
         stations_list.append({
             "Station": s_name,
-            "Adjusted Height (m)": float(np.round(X[idx], 5)),
-            "Std Dev (mm)": float(np.round(std_errors[idx] * 1000.0, 3)),
-            "Status": "Adjusted"
+            "Adjusted RL (m)": float(np.round(X[idx], 5)),
+            "Std. Error (m)": float(np.round(std_errors[idx], 5)),
+            "Status": "Observed Point"
         })
     df_stations = pd.DataFrame(stations_list)
 
-    # Construct Residuals Output DataFrame
+    # Residuals DataFrame
     residuals_list = []
     for i in range(num_obs):
         residuals_list.append({
+            "No": i + 1,
             "From": df.iloc[i][from_col],
             "To": df.iloc[i][to_col],
-            "Observed dH (m)": float(df.iloc[i][dh_col]),
-            "Adjusted dH (m)": float(np.round(df.iloc[i][dh_col] + V[i], 5)),
-            "Residual V (mm)": float(np.round(V[i] * 1000.0, 3)),
-            "Weight (P)": float(np.round(P[i, i], 4))
+            "Backsight (m)": float(df.iloc[i][bs_col]) if bs_col and pd.notnull(df.iloc[i][bs_col]) else 0.0,
+            "Foresight (m)": float(df.iloc[i][fs_col]) if fs_col and pd.notnull(df.iloc[i][fs_col]) else 0.0,
+            "Distance (m)": float(df.iloc[i][dist_col]) if dist_col and pd.notnull(df.iloc[i][dist_col]) else 0.0,
+            "Adjusted dH (m)": float(np.round(df.iloc[i][obs_dh_col] + V[i], 5)),
+            "Residual (mm)": float(np.round(V[i] * 1000.0, 3)),
         })
     df_residuals = pd.DataFrame(residuals_list)
 
@@ -136,5 +142,8 @@ def adjust_1d_network(df: pd.DataFrame, bm_name: str, bm_height: float) -> dict:
         "sigma0": sigma0,
         "vTpv": vTpv,
         "dof": dof,
-        "cond_num": cond_num
+        "chi2_status": chi2_status,
+        "observed_closure": observed_closure,
+        "adjusted_closure": adjusted_closure,
+        "stations_list": all_stations
     }
