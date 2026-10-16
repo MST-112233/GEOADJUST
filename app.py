@@ -564,37 +564,40 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # TAB 1: 1D NETWORK ADJUSTMENT
 # =========================================================
 with tab1:
-    st.header("📏 1D Leveling Network Adjustment")
+    st.header("📏 1D Leveling Network Adjustment & Web Dashboard")
+
+    # Project Metadata Inputs (Matching Dashboard Step 1 & 7)
+    with st.expander("📌 Project Information & Metadata", expanded=True):
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        with mc1:
+            proj_name = st.text_input("Project Name", value="Jalan Contoh 2025", key="1d_proj_name")
+        with mc2:
+            proj_date = st.text_input("Date", value="12 March 2025", key="1d_date")
+        with mc3:
+            proj_inst = st.text_input("Instrument", value="Leica NA320", key="1d_inst")
+        with mc4:
+            proj_observer = st.text_input("Observer", value="Team A", key="1d_observer")
 
     col_cfg1, col_cfg2 = st.columns(2)
     with col_cfg1:
-        bm_name = st.text_input("Fixed Benchmark Station Name", value="BMFGHT", key="1d_bm_name")
-        has_header = st.checkbox("File contains a header row", value=False, key="1d_header")
+        bm_name = st.text_input("Fixed Benchmark Station Name", value="BM1", key="1d_bm_name")
+        has_header = st.checkbox("File contains a header row", value=True, key="1d_header")
     with col_cfg2:
-        bm_height = st.number_input("Benchmark Height (m)", value=100.0000, step=0.0001, format="%.4f", key="1d_bm_height")
+        bm_height = st.number_input("Benchmark Known RL (m)", value=100.0000, step=0.0001, format="%.4f", key="1d_bm_height")
         custom_filename = st.text_input("Output Filename Base", value="1D_Adjustment_Results", key="1d_out_name")
 
-    uploaded_file = st.file_uploader("Upload Leveling File (.csv or .xlsx)", type=["csv", "xlsx"], key="1d_file_uploader")
+    uploaded_file = st.file_uploader("Upload Field Levelling Data (.csv or .xlsx)", type=["csv", "xlsx"], key="1d_file_uploader")
 
     if uploaded_file is not None:
         try:
-            if uploaded_file.name.endswith(".csv"):
-                df_input = pd.read_csv(uploaded_file, header=0 if has_header else None)
-            else:
-                df_input = pd.read_excel(uploaded_file, header=0 if has_header else None)
-
-            expected_cols = ["From Station", "To Station", "Diff. Height(m)", "Distance(m)", "StdDev_mm"]
-            if not has_header or len(df_input.columns) < 3:
-                rename_map = {i: expected_cols[i] for i in range(min(len(df_input.columns), 5))}
-                df_input = df_input.rename(columns=rename_map)
-
-            st.subheader("📋 Input Data Preview")
+            df_input = pd.read_csv(uploaded_file) if uploaded_file.name.endswith(".csv") else pd.read_excel(uploaded_file)
+            st.subheader("📋 Field Data Summary Preview")
             st.dataframe(df_input.head(10), use_container_width=True)
 
-            if st.button("🚀 Run 1D Adjustment", type="primary", use_container_width=True):
-                with st.spinner("Computing Least Squares..."):
+            if st.button("🚀 Run 1D Network Adjustment", type="primary", use_container_width=True):
+                with st.spinner("Computing Least Squares Adjustment..."):
                     st.session_state["results_1d"] = adjust_1d_network(df_input, bm_name, bm_height)
-                    st.success("Adjustment Complete!")
+                    st.success("Adjustment Completed Successfully!")
 
         except Exception as e:
             st.error(f"Data loading error: {e}")
@@ -602,30 +605,48 @@ with tab1:
     if "results_1d" in st.session_state:
         res = st.session_state["results_1d"]
         st.markdown("---")
-        st.subheader("📊 Adjustment Summary Statistics")
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Ref Variance (σ₀²)", f"{res['sigma0_sq']:.6f}")
-        m2.metric("Ref Std Dev (σ₀)", f"{res['sigma0']:.5f}")
-        m3.metric("Degrees of Freedom", res["dof"])
-        m4.metric("Sum VᵀPV", f"{res['vTpv']:.5f}")
+        
+        # Network Overview Banner
+        st.subheader("🌐 Network Overview")
+        overview_str = " ➔ ".join([f"**{s}**" for s in res["stations_list"]])
+        st.info(f"Network Path: {overview_str}")
 
+        # Adjustment Statistics Card (Matching Dashboard Step 7)
+        st.subheader("📊 Adjustment Statistics")
+        stat_col1, stat_col2 = st.columns(2)
+        with stat_col1:
+            st.metric("Degrees of Freedom (f)", res["dof"])
+            st.metric("A Posteriori Unit Weight Std. Dev. (σ₀)", f"{res['sigma0']:.3f}")
+            st.metric("Sum of Squares of Residuals (Σv²)", f"{res['vTpv']:.4f} m²")
+        with stat_col2:
+            st.metric("Chi-square Test", res["chi2_status"])
+            st.metric("Network Closure (Observed)", f"{res['observed_closure']:.3f} m")
+            st.metric("Network Closure (Adjusted)", f"{res['adjusted_closure']:.3f} m")
+
+        st.markdown("---")
         col_tbl1, col_tbl2 = st.columns(2)
         with col_tbl1:
-            st.subheader("📍 Adjusted Station Heights")
+            st.subheader("📍 Adjusted Reduced Levels (RL)")
             st.dataframe(res["stations"], use_container_width=True, hide_index=True)
 
         with col_tbl2:
-            st.subheader("📏 Observation Residuals")
+            st.subheader("📏 Observed Levelling Data & Residuals")
             st.dataframe(res["residuals"], use_container_width=True, hide_index=True)
 
+        # Height Profile Chart
         st.markdown("---")
+        st.subheader("📈 Height Profile (Adjusted RL)")
+        df_chart = res["stations"].set_index("Station")[["Adjusted RL (m)"]]
+        st.line_chart(df_chart)
+
+        # Export Report Button
         excel_buffer = io.BytesIO()
         with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-            res["stations"].to_excel(writer, sheet_name="Adjusted Heights", index=False)
+            res["stations"].to_excel(writer, sheet_name="Adjusted RL", index=False)
             res["residuals"].to_excel(writer, sheet_name="Residuals", index=False)
 
         st.download_button(
-            label="📥 Save & Download Excel Output (.xlsx)",
+            label="📄 Export Full Adjustment Report (.xlsx)",
             data=excel_buffer.getvalue(),
             file_name=f"{custom_filename}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
