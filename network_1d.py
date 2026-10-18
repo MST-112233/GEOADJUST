@@ -1,6 +1,11 @@
 import numpy as np
 import pandas as pd
-from scipy.stats import chi2
+
+try:
+    from scipy.stats import chi2
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
 
 def adjust_1d_network(df: pd.DataFrame, bm_name: str, bm_height: float) -> dict:
     """
@@ -92,14 +97,14 @@ def adjust_1d_network(df: pd.DataFrame, bm_name: str, bm_height: float) -> dict:
     sigma0 = np.sqrt(sigma0_sq)
     std_errors = np.sqrt(np.diag(Qxx) * (sigma0_sq if dof > 0 else 1.0))
 
-    # Chi-Square Test (95% Confidence)
+    # Chi-Square Test (95% Confidence) with Scipy fallback
     alpha = 0.05
-    if dof > 0:
+    if dof > 0 and HAS_SCIPY:
         chi2_low = chi2.ppf(alpha / 2, dof)
         chi2_high = chi2.ppf(1 - alpha / 2, dof)
         chi2_status = "Passed" if chi2_low <= vTpv <= chi2_high else "Failed"
     else:
-        chi2_status = "N/A (DOF=0)"
+        chi2_status = "N/A (Scipy not installed)"
 
     observed_closure = float(np.sum(L))
     adjusted_closure = 0.000
