@@ -14,7 +14,6 @@ def adjust_1d_network(df: pd.DataFrame, bm_name: str, bm_height: float) -> dict:
     """
     df = df.copy()
 
-    # Dynamic column identification
     bs_col = next((c for c in df.columns if 'back' in c.lower() or c.lower() == 'bs'), None)
     fs_col = next((c for c in df.columns if 'fore' in c.lower() or c.lower() == 'fs'), None)
     dh_col = next((c for c in df.columns if 'diff' in c.lower() or 'dh' in c.lower() or 'delta' in c.lower()), None)
@@ -24,7 +23,6 @@ def adjust_1d_network(df: pd.DataFrame, bm_name: str, bm_height: float) -> dict:
     from_col = df.columns[0]
     to_col = df.columns[1]
 
-    # Compute dH if BS and FS are provided
     if bs_col and fs_col:
         df['Computed_dH'] = pd.to_numeric(df[bs_col], errors='coerce') - pd.to_numeric(df[fs_col], errors='coerce')
         obs_dh_col = 'Computed_dH'
@@ -33,7 +31,6 @@ def adjust_1d_network(df: pd.DataFrame, bm_name: str, bm_height: float) -> dict:
     else:
         obs_dh_col = df.columns[2]
 
-    # Clean station names
     df[from_col] = df[from_col].astype(str).str.strip()
     df[to_col] = df[to_col].astype(str).str.strip()
 
@@ -97,14 +94,13 @@ def adjust_1d_network(df: pd.DataFrame, bm_name: str, bm_height: float) -> dict:
     sigma0 = np.sqrt(sigma0_sq)
     std_errors = np.sqrt(np.diag(Qxx) * (sigma0_sq if dof > 0 else 1.0))
 
-    # Chi-Square Test (95% Confidence) with Scipy fallback
     alpha = 0.05
     if dof > 0 and HAS_SCIPY:
         chi2_low = chi2.ppf(alpha / 2, dof)
         chi2_high = chi2.ppf(1 - alpha / 2, dof)
         chi2_status = "Passed" if chi2_low <= vTpv <= chi2_high else "Failed"
     else:
-        chi2_status = "N/A (Scipy not installed)"
+        chi2_status = "N/A"
 
     observed_closure = float(np.sum(L))
     adjusted_closure = 0.000
@@ -125,11 +121,10 @@ def adjust_1d_network(df: pd.DataFrame, bm_name: str, bm_height: float) -> dict:
         })
     df_stations = pd.DataFrame(stations_list)
 
-    # Residuals DataFrame
+    # Residuals DataFrame (7 clean columns)
     residuals_list = []
     for i in range(num_obs):
         residuals_list.append({
-            "No": i + 1,
             "From": df.iloc[i][from_col],
             "To": df.iloc[i][to_col],
             "Backsight (m)": float(df.iloc[i][bs_col]) if bs_col and pd.notnull(df.iloc[i][bs_col]) else 0.0,
