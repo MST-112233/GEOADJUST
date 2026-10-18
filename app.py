@@ -648,7 +648,7 @@ with tab1:
                     "observer": p_obs, "bm_name": p_bm_name, "bm_height": p_bm_height
                 }
                 st.session_state["wizard_step"] = 2
-                st.rer()
+                st.rerun()  # Fixed from st.rer()
 
         elif step == 2:
             st.subheader("Step 2: Enter Backsight (BS) & Foresight (FS) Observations")
@@ -771,7 +771,6 @@ with tab1:
 
         st.markdown("---")
         
-        # Generate PDF Report function using ReportLab
         from reportlab.lib.pagesizes import letter
         from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -783,29 +782,19 @@ with tab1:
             story = []
             styles = getSampleStyleSheet()
 
-            # Custom Header Style
             title_style = ParagraphStyle(
-                'ReportTitle',
-                parent=styles['Heading1'],
-                fontSize=20,
-                textColor=colors.HexColor('#1E88E5'),
-                alignment=1, # Center
-                spaceAfter=6
+                'ReportTitle', parent=styles['Heading1'], fontSize=20,
+                textColor=colors.HexColor('#1E88E5'), alignment=1, spaceAfter=6
             )
             subtitle_style = ParagraphStyle(
-                'ReportSubtitle',
-                parent=styles['Normal'],
-                fontSize=10,
-                textColor=colors.HexColor('#555555'),
-                alignment=1,
-                spaceAfter=15
+                'ReportSubtitle', parent=styles['Normal'], fontSize=10,
+                textColor=colors.HexColor('#555555'), alignment=1, spaceAfter=15
             )
 
             story.append(Paragraph("GEOADJUST — 1D Levelling Adjustment Report", title_style))
             story.append(Paragraph("Geodetic Network Least Squares Adjustment System", subtitle_style))
             story.append(Spacer(1, 10))
 
-            # Project Metadata Table
             meta_data = [
                 [Paragraph("<b>Project Name:</b>", styles['Normal']), Paragraph(str(project_meta.get('name', '-')), styles['Normal']),
                  Paragraph("<b>Date:</b>", styles['Normal']), Paragraph(str(project_meta.get('date', '-')), styles['Normal'])],
@@ -822,7 +811,6 @@ with tab1:
             story.append(t_meta)
             story.append(Spacer(1, 15))
 
-            # Statistics Section
             story.append(Paragraph("<b>Adjustment Summary Statistics</b>", styles['Heading2']))
             stat_data = [
                 ["Degrees of Freedom (f):", str(res_data['dof']), "A Posteriori Std. Dev. (σ₀):", f"{res_data['sigma0']:.4f}"],
@@ -838,7 +826,6 @@ with tab1:
             story.append(t_stat)
             story.append(Spacer(1, 15))
 
-            # Stations Table
             story.append(Paragraph("<b>Adjusted Reduced Levels (RL)</b>", styles['Heading2']))
             stn_df = res_data['stations']
             stn_table_data = [list(stn_df.columns)] + stn_df.values.tolist()
@@ -856,7 +843,6 @@ with tab1:
             story.append(t_stn)
             story.append(Spacer(1, 15))
 
-            # Residuals Table
             story.append(Paragraph("<b>Observation Residuals</b>", styles['Heading2']))
             res_df = res_data['residuals']
             res_table_data = [list(res_df.columns)] + res_df.values.tolist()
@@ -873,7 +859,6 @@ with tab1:
             ]))
             story.append(t_res)
 
-            # Build PDF with page numbering footer
             def add_header_footer(canvas, document):
                 canvas.saveState()
                 canvas.setFont('Helvetica', 8)
