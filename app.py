@@ -158,7 +158,6 @@ if not auth["logged_in"]:
                     auth["room_id"] = room_key
                     auth["password"] = input_pass
                     
-                    st.session_state["room_storage"] = APP_REGISTRY[room_key]["data_store"]
                     st.success("Login Successful!")
                     st.rerun()
     st.stop()
@@ -241,7 +240,6 @@ with tab1:
                 st.error(f"Data loading error: {e}")
 
     else:
-        # --- Step-by-Step Manual Key-in Wizard ---
         if "wizard_step" not in st.session_state:
             st.session_state["wizard_step"] = 1
         if "manual_records" not in st.session_state:
@@ -378,7 +376,6 @@ with tab1:
     if "results_1d" not in st.session_state and "results_1d" in APP_REGISTRY[auth["room_id"]]["data_store"]:
         st.session_state["results_1d"] = APP_REGISTRY[auth["room_id"]]["data_store"]["results_1d"]
 
-    # --- Results Display & PDF Export ---
     if "results_1d" in st.session_state:
         res = st.session_state["results_1d"]
         meta = st.session_state.get("proj_meta", {
@@ -595,7 +592,6 @@ with tab3:
     st.header("📍 Real-Time Tracking & Room Collaboration")
     st.info(f"Active Room Session: `{auth['room_id']}` as `{auth['username']}`")
     
-    # Global rooms registry integration for tracking
     @st.cache_resource
     def get_global_room_registry():
         return {}
@@ -706,8 +702,62 @@ with tab4:
 
     elif mode == "Map Projection":
         st.subheader("🗺️ Map Projection System")
-        st.info("Map projection module active. Select parameters above to compute forward or inverse projections.")
+        proj_region = st.selectbox("Select Region:", ["Peninsular Malaysia", "Sabah and Sarawak"], key="proj_region")
+        proj_modules = ["1. GDM2000 to RSO Geocentric", "2. RSO Geocentric to GDM2000"] if proj_region == "Peninsular Malaysia" else ["1. GDM2000 to RSO Geocentric", "2. RSO Geocentric to GDM2000"]
+        sel_p_module = st.selectbox("Transformation Module:", proj_modules, key="proj_module_sel")
+        module_title = sel_p_module.split(". ", 1)[1]
+        from_name, to_name = [x.strip() for x in module_title.split(" to ")]
+
+        col_i1, col_i2 = st.columns(2)
+        with col_i1:
+            p_dd_lat = st.number_input("Latitude (Decimal Degrees)", value=1.4833333, format="%.5f", key="p_dd_lat")
+        with col_i2:
+            p_dd_lon = st.number_input("Longitude (Decimal Degrees)", value=103.7500000, format="%.5f", key="p_dd_lon")
+
+        if st.button("🚀 Calculate Map Projection", type="primary", use_container_width=True, key="btn_calc_proj"):
+            E, N = dt.latlon_to_rso(p_dd_lat, p_dd_lon)
+            st.success("Projection Complete!")
+            df_res = pd.DataFrame([{
+                "Station": "STN_PROJ_01",
+                f"{from_name} Lat": f"{p_dd_lat:.5f}°", f"{from_name} Lon": f"{p_dd_lon:.5f}°",
+                f"{to_name} Easting (m)": f"{E:.3f}", f"{to_name} Northing (m)": f"{N:.3f}"
+            }])
+            st.dataframe(df_res, use_container_width=True, hide_index=True)
 
     elif mode == "Geodetic Tools (Conversion)":
         st.subheader("🌐 Geodetic Coordinate Conversion Tools")
-        st.info("Geographical to Cartesian and Cartesian to Geographical conversion modules active.")
+        tool_choice = st.radio("Tool Selection:", ["Geographical to Cartesian", "Cartesian to Geographical"], horizontal=True, key="tool_choice")
+        ellipsoid_name = st.selectbox("Select Pre-Defined Ellipsoid:", list(dt.ELLIPSOIDS.keys()), key="ell_sel")
+
+        if tool_choice == "Geographical to Cartesian":
+            col_g1, col_g2, col_g3 = st.columns(3)
+            with col_g1:
+                g_dd_lat = st.number_input("Latitude (Decimal Degrees)", value=1.4833333, format="%.5f", key="g_dd_lat")
+            with col_g2:
+                g_dd_lon = st.number_input("Longitude (Decimal Degrees)", value=103.7500000, format="%.5f", key="g_dd_lon")
+            with col_g3:
+                g_h = st.number_input("Ellipsoidal Height (m)", value=10.0, format="%.3f", key="g_h")
+
+            if st.button("⚙️ Compute Cartesian (X, Y, Z)", type="primary", use_container_width=True, key="btn_geo_cart"):
+                X, Y, Z = dt.geo_to_cartesian(g_dd_lat, g_dd_lon, g_h, ellipsoid_name)
+                st.success("Conversion Computed Successfully!")
+                df_res = pd.DataFrame([{
+                    "Station": "STN_TOOL_01", "X (m)": f"{X:.4f}", "Y (m)": f"{Y:.4f}", "Z (m)": f"{Z:.4f}"
+                }])
+                st.dataframe(df_res, use_container_width=True, hide_index=True)
+        else:
+            col_c1, col_c2, col_c3 = st.columns(3)
+            with col_c1:
+                in_X = st.number_input("X (meters)", value=-1468840.4040, format="%.4f", key="in_x")
+            with col_c2:
+                in_Y = st.number_input("Y (meters)", value=6203485.7950, format="%.4f", key="in_y")
+            with col_c3:
+                in_Z = st.number_input("Z (meters)", value=200173.7140, format="%.4f", key="in_z")
+
+            if st.button("⚙️ Compute Geographical (Lat, Lon, H)", type="primary", use_container_width=True, key="btn_cart_geo"):
+                lat_deg, lon_deg, height = dt.cartesian_to_geo(in_X, in_Y, in_Z, ellipsoid_name)
+                st.success("Conversion Computed Successfully!")
+                df_res = pd.DataFrame([{
+                    "Station": "STN_TOOL_01", "Latitude": f"{lat_deg:.6f}°", "Longitude": f"{lon_deg:.6f}°", "Height (m)": f"{height:.4f}"
+                }])
+                st.dataframe(df_res, use_container_width=True, hide_index=True)
