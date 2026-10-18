@@ -92,7 +92,7 @@ INACTIVITY_TIMEOUT_HOURS = 2
 
 
 # =========================================================
-# FRONT LOGIN SCREEN (Requirement 1 & 3)
+# FRONT LOGIN SCREEN
 # =========================================================
 if "app_auth" not in st.session_state:
     st.session_state["app_auth"] = {
@@ -135,13 +135,10 @@ if not auth["logged_in"]:
                     user_key = input_username.strip()
                     now_ts = datetime.now(TIMEZONE)
                     
-                    # Check if room/session exists in registry
                     if room_key in APP_REGISTRY:
                         room_info = APP_REGISTRY[room_key]
-                        # Check 2-hour inactivity timeout
                         last_active = room_info.get("last_active", now_ts)
                         if (now_ts - last_active) > timedelta(hours=INACTIVITY_TIMEOUT_HOURS):
-                            # Purge expired room data
                             APP_REGISTRY.pop(room_key, None)
                             st.warning("⚠️ Previous session for this room expired due to 2 hours of inactivity. Starting fresh session.")
                         else:
@@ -149,7 +146,6 @@ if not auth["logged_in"]:
                                 st.error("Incorrect password for this active room!")
                                 st.stop()
                     
-                    # Initialize or load room state
                     if room_key not in APP_REGISTRY:
                         APP_REGISTRY[room_key] = {
                             "password": input_pass,
@@ -157,13 +153,11 @@ if not auth["logged_in"]:
                             "data_store": {}
                         }
                     
-                    # Set authentication session state
                     auth["logged_in"] = True
                     auth["username"] = user_key
                     auth["room_id"] = room_key
                     auth["password"] = input_pass
                     
-                    # Restore session data if saved previously
                     st.session_state["room_storage"] = APP_REGISTRY[room_key]["data_store"]
                     st.success("Login Successful!")
                     st.rerun()
@@ -174,10 +168,8 @@ if not auth["logged_in"]:
 # MAIN GEOADJUST DASHBOARD (Post-Login)
 # =========================================================
 
-# Update last active timestamp for 2-hour timeout tracking
 APP_REGISTRY[auth["room_id"]]["last_active"] = datetime.now(TIMEZONE)
 
-# Title Header & Personalized Greeting Banner (Requirement 2)
 st.markdown("<h1 class='main-title'>🌐 GEOADJUST</h1>", unsafe_allow_html=True)
 st.markdown("<p class='sub-title'>Geodetic Network Adjustment & Spatial Toolkit</p>", unsafe_allow_html=True)
 
@@ -361,7 +353,6 @@ with tab1:
                         res = adjust_1d_network(df_input, meta["bm_name"], meta["bm_height"])
                         st.session_state["results_1d"] = res
                         st.session_state["custom_filename_1d"] = f"1D_Report_{meta['name'].replace(' ', '_')}"
-                        # Save to global room store so it persists across refreshes
                         APP_REGISTRY[auth["room_id"]]["data_store"]["results_1d"] = res
                         st.success("Adjustment Complete!")
                         st.rerun()
@@ -384,7 +375,6 @@ with tab1:
                 except Exception as e:
                     st.error(f"Adjustment error: {e}")
 
-    # Check room storage for results if not in current session state
     if "results_1d" not in st.session_state and "results_1d" in APP_REGISTRY[auth["room_id"]]["data_store"]:
         st.session_state["results_1d"] = APP_REGISTRY[auth["room_id"]]["data_store"]["results_1d"]
 
@@ -531,8 +521,72 @@ with tab1:
 # =========================================================
 with tab2:
     st.header("🛰️ 3D GNSS Vector Network Adjustment")
-    st.caption(f"Logged in user: **{auth['username']}** | Room: **{auth['room_id']}**")
-    st.info("3D GNSS adjustment module ready for vector data input.")
+    st.caption("MATLAB-Aligned Parametric 3D Geodetic Vector Least Squares Adjustment")
+
+    col_3d_1, col_3d_2 = st.columns(2)
+    with col_3d_1:
+        stn_const_name = st.text_input("Fixed Station Name", value="SPGR", key="3d_const_name")
+        has_header_3d = st.checkbox("File contains a header row", value=True, key="3d_header")
+        custom_filename_3d = st.text_input("Output Filename Base", value="3D_GNSS_Adjustment_Results", key="3d_out_name")
+
+    with col_3d_2:
+        st.markdown("**Constrained Station Coordinates (ECEF)**")
+        col_x, col_y, col_z = st.columns(3)
+        with col_x:
+            const_x = st.number_input("X (m)", value=-1468840.4040, format="%.4f", step=0.0001, key="3d_x")
+        with col_y:
+            const_y = st.number_input("Y (m)", value=6203485.7950, format="%.4f", step=0.0001, key="3d_z")
+        with col_z:
+            const_z = st.number_input("Z (m)", value=200173.7140, format="%.4f", step=0.0001, key="3d_y")
+
+    uploaded_file_3d = st.file_uploader("Upload Baseline Vector File (.xlsx or .csv)", type=["xlsx", "csv"], key="3d_file_uploader")
+
+    if uploaded_file_3d is not None:
+        try:
+            if uploaded_file_3d.name.endswith(".csv"):
+                df_input_3d = pd.read_csv(uploaded_file_3d, header=0 if has_header_3d else None)
+            else:
+                df_input_3d = pd.read_excel(uploaded_file_3d, header=0 if has_header_3d else None)
+
+            st.subheader("📋 Input Vector Preview")
+            st.dataframe(df_input_3d.head(10), use_container_width=True)
+
+            if st.button("🚀 Run 3D Adjustment", type="primary", use_container_width=True, key="btn_run_3d"):
+                with st.spinner("Computing 3D Least Squares..."):
+                    Ta_coords = [const_x, const_y, const_z]
+                    res3d = adjust_3d_network(df_input_3d, const_name=stn_const_name, Ta=Ta_coords, jns=1)
+                    st.session_state["results_3d"] = res3d
+                    APP_REGISTRY[auth["room_id"]]["data_store"]["results_3d"] = res3d
+                    st.success("3D Network Adjustment Complete!")
+
+        except Exception as e:
+            st.error(f"Data loading error: {e}")
+
+    if "results_3d" not in st.session_state and "results_3d" in APP_REGISTRY[auth["room_id"]]["data_store"]:
+        st.session_state["results_3d"] = APP_REGISTRY[auth["room_id"]]["data_store"]["results_3d"]
+
+    if "results_3d" in st.session_state:
+        res3d = st.session_state["results_3d"]
+        st.markdown("---")
+        st.subheader("📊 3D Adjustment Summary Statistics")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Ref Variance (σ₀²)", f"{res3d['sigma0_sq']:.6f}")
+        m2.metric("Ref Std Dev (σ₀)", f"{res3d['sigma0']:.5f}")
+        m3.metric("Degrees of Freedom", res3d["dof"])
+        m4.metric("Sum VᵀPV", f"{res3d['vTpv']:.5f}")
+
+        excel_buffer_3d = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer_3d, engine="openpyxl") as writer:
+            res3d["stations"].to_excel(writer, sheet_name="Adjusted Coordinates", index=False)
+            res3d["residuals"].to_excel(writer, sheet_name="Residuals", index=False)
+
+        st.download_button(
+            label="📥 Save & Download 3D Excel Output (.xlsx)",
+            data=excel_buffer_3d.getvalue(),
+            file_name=f"{custom_filename_3d}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
 
 # =========================================================
 # TAB 3: REAL-TIME TRACKING
@@ -540,10 +594,120 @@ with tab2:
 with tab3:
     st.header("📍 Real-Time Tracking & Room Collaboration")
     st.info(f"Active Room Session: `{auth['room_id']}` as `{auth['username']}`")
+    
+    # Global rooms registry integration for tracking
+    @st.cache_resource
+    def get_global_room_registry():
+        return {}
+    GLOBAL_ROOMS_REGISTRY = get_global_room_registry()
+    current_room = auth["room_id"]
+    user_id = auth["username"]
+
+    COLOR_PALETTE = ["blue", "red", "green", "orange", "violet", "gold", "black"]
+    COLOR_EMOJI = {"blue": "🔵", "red": "🔴", "green": "🟢", "orange": "🟠", "violet": "🟣", "gold": "🟡", "black": "⚫"}
+    ONLINE_THRESHOLD_SEC = 20
+    MARKER_SHADOW = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png"
+
+    if current_room not in GLOBAL_ROOMS_REGISTRY:
+        GLOBAL_ROOMS_REGISTRY[current_room] = {
+            "password": auth["password"],
+            "members": {
+                user_id: {
+                    "role": "Field Surveyor",
+                    "color": COLOR_PALETTE[0],
+                    "time_in": datetime.now(TIMEZONE),
+                    "time_out": None,
+                    "last_heartbeat": datetime.now(TIMEZONE)
+                }
+            },
+            "locations": {},
+            "unified_log": []
+        }
+    room_data = GLOBAL_ROOMS_REGISTRY[current_room]
+    if user_id not in room_data["members"]:
+        color_idx = len(room_data["members"]) % len(COLOR_PALETTE)
+        room_data["members"][user_id] = {
+            "role": "Field Surveyor",
+            "color": COLOR_PALETTE[color_idx],
+            "time_in": datetime.now(TIMEZONE),
+            "time_out": None,
+            "last_heartbeat": datetime.now(TIMEZONE)
+        }
+
+    refresh_count = st_autorefresh(interval=10000, key="tracking_autorefresh_t3")
+    loc = get_geolocation(component_key=f"geo_t3_{refresh_count}")
+    now_ts = datetime.now(TIMEZONE)
+
+    if loc and "coords" in loc:
+        coords = loc["coords"]
+        lat = coords.get("latitude")
+        lon = coords.get("longitude")
+        alt = coords.get("altitude") or 0.0
+        acc = coords.get("accuracy") or 0.0
+        user_color = room_data["members"][user_id]["color"]
+        
+        tracks = room_data.setdefault("tracks", {})
+        track = tracks.setdefault(user_id, [])
+        track.append({"lat": lat, "lon": lon, "alt": alt, "ts": now_ts})
+        
+        room_data["locations"][user_id] = {
+            "user_id": user_id, "latitude": lat, "longitude": lon,
+            "altitude_m": alt, "accuracy_m": acc, "updated_at": now_ts.strftime("%Y-%m-%d %H:%M:%S"),
+            "last_seen": now_ts, "color": user_color
+        }
+
+    active_locs = {uid: l for uid, l in room_data["locations"].items() if room_data["members"].get(uid, {}).get("time_out") is None}
+    if active_locs:
+        st.success("GPS Active & Streaming to Room.")
+        st.json(active_locs)
+    else:
+        st.info("Awaiting GPS location signal...")
 
 # =========================================================
 # TAB 4: DATUM TRANSFORMATION
 # =========================================================
 with tab4:
     st.header("🧭 Geodetic Datum Transformation & Map Projection")
-    st.info("Datum transformation modules active.")
+
+    mode = st.radio(
+        "Select Operation Mode:",
+        ["3-Dimensional Transformation", "Map Projection", "Geodetic Tools (Conversion)"],
+        horizontal=True,
+        key="gdts_mode",
+    )
+    st.markdown("---")
+
+    if mode == "3-Dimensional Transformation":
+        st.subheader("📐 3D Datum Transformation")
+        region = st.selectbox("Select Region / Zone:", ["Peninsular Malaysia", "Sabah and Sarawak"], key="trans_region")
+        modules = ["1. GDM2000 to PMSGN94", "2. PMSGN94 to GDM2000"] if region == "Peninsular Malaysia" else ["1. GDM2000 to EMSGN97", "2. EMSGN97 to GDM2000"]
+        selected_module = st.selectbox("Transformation Module:", modules, key="trans_module_sel")
+        module_key = selected_module.split(". ", 1)[1]
+        from_name, to_name = [x.strip() for x in module_key.split(" to ")]
+
+        col_in1, col_in2, col_in3 = st.columns(3)
+        with col_in1:
+            lat_in = st.number_input("Latitude (Decimal Degrees)", value=1.4833333, format="%.5f", key="trans_dd_lat")
+        with col_in2:
+            lon_in = st.number_input("Longitude (Decimal Degrees)", value=103.7500000, format="%.5f", key="trans_dd_lon")
+        with col_in3:
+            h_in = st.number_input("Ellipsoidal Height (m)", value=10.000, format="%.3f", key="trans_h_in")
+            stn_name = st.text_input("Station Name", value="STN01", key="trans_stn_name")
+
+        if st.button("⚡ Transform Coordinates", type="primary", use_container_width=True, key="btn_transform"):
+            lat_out, lon_out, h_out = dt.bursa_wolf_transform(lat_in, lon_in, h_in, module_key)
+            st.success("Transformation Successful!")
+            df_res = pd.DataFrame([{
+                "Station": stn_name,
+                f"{from_name} Lat": f"{lat_in:.6f}°", f"{from_name} Lon": f"{lon_in:.6f}°",
+                f"{to_name} Lat": f"{lat_out:.6f}°", f"{to_name} Lon": f"{lon_out:.6f}°", f"{to_name} H (m)": f"{h_out:.3f}"
+            }])
+            st.dataframe(df_res, use_container_width=True, hide_index=True)
+
+    elif mode == "Map Projection":
+        st.subheader("🗺️ Map Projection System")
+        st.info("Map projection module active. Select parameters above to compute forward or inverse projections.")
+
+    elif mode == "Geodetic Tools (Conversion)":
+        st.subheader("🌐 Geodetic Coordinate Conversion Tools")
+        st.info("Geographical to Cartesian and Cartesian to Geographical conversion modules active.")
