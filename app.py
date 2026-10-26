@@ -2,7 +2,6 @@ import io
 import os
 import json
 import re
-import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -10,7 +9,10 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
-from streamlit_js_eval import get_geolocation, streamlit_js_eval
+from streamlit_js_eval import get_geolocation
+
+import folium
+from streamlit_folium import st_folium
 
 from network_1d import adjust_1d_network
 from network_3d import adjust_3d_network
@@ -81,7 +83,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- GLOBAL SESSION REGISTRY FOR 2-HOUR EXPIRY ---
+# --- GLOBAL SESSION REGISTRY FOR 2-HOUR EXPIRY & INTERCONNECTED ROOMS ---
 @st.cache_resource
 def get_global_app_registry():
     return {}
@@ -89,6 +91,7 @@ def get_global_app_registry():
 APP_REGISTRY = get_global_app_registry()
 TIMEZONE = ZoneInfo("Asia/Kuala_Lumpur")
 INACTIVITY_TIMEOUT_HOURS = 2
+COLOR_PALETTE = ["#1E88E5", "#E53935", "#43A047", "#FB8C00", "#8E24AA", "#FDD835", "#00ACC1"]
 
 
 # =========================================================
@@ -114,7 +117,7 @@ if not auth["logged_in"]:
             """
             <div style="background-color: #ffffff; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08);">
                 <h3 style="color: #1E88E5; text-align: center; margin-bottom: 5px;">🔐 Portal Login</h3>
-                <p style="color: #666; font-size: 0.85rem; text-align: center; margin-bottom: 20px;">Enter your credentials to access or continue your project session.</p>
+                <p style="color: #666; font-size: 0.85rem; text-align: center; margin-bottom: 20px;">Enter identical Room ID and Password to collaborate and track positions.</p>
             </div>
             """,
             unsafe_allow_html=True
@@ -150,7 +153,9 @@ if not auth["logged_in"]:
                         APP_REGISTRY[room_key] = {
                             "password": input_pass,
                             "last_active": now_ts,
-                            "data_store": {}
+                            "data_store": {},
+                            "locations": {},
+                            "levelling_positions": []
                         }
                     
                     auth["logged_in"] = True
@@ -167,7 +172,19 @@ if not auth["logged_in"]:
 # MAIN GEOADJUST DASHBOARD (Post-Login)
 # =========================================================
 
-APP_REGISTRY[auth["room_id"]]["last_active"] = datetime.now(TIMEZONE)
+room_key = auth["room_id"]
+if room_key in APP_REGISTRY:
+    APP_REGISTRY[room_key]["last_active"] = datetime.now(TIMEZONE)
+else:
+    APP_REGISTRY[room_key] = {
+        "password": auth["password"],
+        "last_active": datetime.now(TIMEZONE),
+        "data_store": {},
+        "locations": {},
+        "levelling_positions": []
+    }
+
+room_data = APP_REGISTRY[room_key]
 
 st.markdown("<h1 class='main-title'>🌐 GEOADJUST</h1>", unsafe_allow_html=True)
 st.markdown("<p class='sub-title'>Geodetic Network Adjustment & Spatial Toolkit</p>", unsafe_allow_html=True)
@@ -195,7 +212,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 # =========================================================
-# TAB 1: 1D NETWORK ADJUSTMENT
+# TAB 1: 1D NETWORK ADJUSTMENT WITH AUTO-POSITIONING
 # =========================================================
 with tab1:
     st.header("📏 1D Leveling Network Adjustment")
@@ -246,7 +263,7 @@ with tab1:
             st.session_state["manual_records"] = []
         if "proj_meta" not in st.session_state:
             st.session_state["proj_meta"] = {
-                "name": "Jalan Contoh 2025",
+                "name": "Jalan Contoh 2026",
                 "date": datetime.now().date(),
                 "instrument": "Leica NA320",
                 "observer": auth["username"],
@@ -285,6 +302,20 @@ with tab1:
             meta = st.session_state["proj_meta"]
             st.info(f"Project: **{meta['name']}** | Benchmark: **{meta['bm_name']} ({meta['bm_height']:.4f} m)**")
 
+            # --- Auto-Take Positioning Option for 1D Levelling ---
+            st.markdown("#### 📍 Auto GPS Positioning for Levelling Station")
+            auto_gps_enabled = st.checkbox("Enable Auto-Take GPS Positioning for current observation", value=True, key="auto_gps_1d_toggle")
+            show_gps_details = st.checkbox("👁️ View Captured GPS Coordinates", value=True, key="show_gps_1d_toggle")
+
+            current_gps_lat, current_gps_lon = None, None
+            if auto_gps_enabled:
+                loc_1d = get_geolocation(component_key=f"geo_1d_{datetime.now().second}")
+                if loc_1d and "coords" in loc_1d:
+                    current_gps_lat = loc_1d["coords"].get("latitude")
+                    current_gps_lon = loc_1d["coords"].get("longitude")
+                    if show_gps_details:
+                        st.success(f"🛰️ GPS Position Acquired: Lat: `{current_gps_lat:.6f}`, Lon: `{current_gps_lon:.6f}`")
+
             with st.form("obs_form", clear_on_submit=True):
                 col_o1, col_o2 = st.columns(2)
                 with col_o1:
@@ -298,13 +329,28 @@ with tab1:
 
                 submitted = st.form_submit_button("➕ Add Observation Record", use_container_width=True)
                 if submitted:
-                    st.session_state["manual_records"].append({
+                    record_entry = {
                         "From": from_stn.strip(),
                         "To": to_stn.strip(),
                         "Backsight (m)": bs_val,
                         "Foresight (m)": fs_val,
-                        "Distance (m)": dist_val
-                    })
+                        "Distance (m)": dist_val,
+                        "Observer": auth["username"],
+                        "Timestamp": datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+                    }
+                    if current_gps_lat and current_gps_lon:
+                        record_entry["Latitude"] = current_gps_lat
+                        record_entry["Longitude"] = current_gps_lon
+                        # Push to room levelling positions for tracking monitoring
+                        room_data["levelling_positions"].append({
+                            "station": to_stn.strip(),
+                            "lat": current_gps_lat,
+                            "lon": current_gps_lon,
+                            "observer": auth["username"],
+                            "timestamp": datetime.now(TIMEZONE).strftime("%H:%M:%S")
+                        })
+
+                    st.session_state["manual_records"].append(record_entry)
                     st.success(f"Added observation from {from_stn} to {to_stn} successfully!")
 
             if st.session_state["manual_records"]:
@@ -351,7 +397,7 @@ with tab1:
                         res = adjust_1d_network(df_input, meta["bm_name"], meta["bm_height"])
                         st.session_state["results_1d"] = res
                         st.session_state["custom_filename_1d"] = f"1D_Report_{meta['name'].replace(' ', '_')}"
-                        APP_REGISTRY[auth["room_id"]]["data_store"]["results_1d"] = res
+                        room_data["data_store"]["results_1d"] = res
                         st.success("Adjustment Complete!")
                         st.rerun()
                     except Exception as e:
@@ -368,18 +414,18 @@ with tab1:
                     res = adjust_1d_network(df_input, bm_name, bm_height)
                     st.session_state["results_1d"] = res
                     st.session_state["custom_filename_1d"] = custom_filename
-                    APP_REGISTRY[auth["room_id"]]["data_store"]["results_1d"] = res
+                    room_data["data_store"]["results_1d"] = res
                     st.success("Adjustment Complete!")
                 except Exception as e:
                     st.error(f"Adjustment error: {e}")
 
-    if "results_1d" not in st.session_state and "results_1d" in APP_REGISTRY[auth["room_id"]]["data_store"]:
-        st.session_state["results_1d"] = APP_REGISTRY[auth["room_id"]]["data_store"]["results_1d"]
+    if "results_1d" not in st.session_state and "results_1d" in room_data["data_store"]:
+        st.session_state["results_1d"] = room_data["data_store"]["results_1d"]
 
     if "results_1d" in st.session_state:
         res = st.session_state["results_1d"]
         meta = st.session_state.get("proj_meta", {
-            "name": "Jalan Contoh 2025", "date": datetime.now().date(),
+            "name": "Jalan Contoh 2026", "date": datetime.now().date(),
             "instrument": "Leica NA320", "observer": auth["username"]
         })
 
@@ -400,118 +446,6 @@ with tab1:
             st.subheader("📏 Observation Residuals")
             st.dataframe(res["residuals"], use_container_width=True, hide_index=True)
 
-        st.markdown("---")
-        
-        from reportlab.lib.pagesizes import letter
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib import colors
-
-        def generate_pdf_report(res_data, project_meta):
-            pdf_buffer = io.BytesIO()
-            doc = SimpleDocTemplate(pdf_buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
-            story = []
-            styles = getSampleStyleSheet()
-
-            title_style = ParagraphStyle(
-                'ReportTitle', parent=styles['Heading1'], fontSize=18,
-                textColor=colors.HexColor('#1E88E5'), alignment=1, spaceAfter=4
-            )
-            subtitle_style = ParagraphStyle(
-                'ReportSubtitle', parent=styles['Normal'], fontSize=9,
-                textColor=colors.HexColor('#555555'), alignment=1, spaceAfter=12
-            )
-
-            story.append(Paragraph("GEOADJUST — 1D Levelling Adjustment Report", title_style))
-            story.append(Paragraph("Geodetic Network Least Squares Adjustment System", subtitle_style))
-            story.append(Spacer(1, 8))
-
-            meta_data = [
-                [Paragraph("<b>Project Name:</b>", styles['Normal']), Paragraph(str(project_meta.get('name', '-')), styles['Normal']),
-                 Paragraph("<b>Date:</b>", styles['Normal']), Paragraph(str(project_meta.get('date', '-')), styles['Normal'])],
-                [Paragraph("<b>Instrument:</b>", styles['Normal']), Paragraph(str(project_meta.get('instrument', '-')), styles['Normal']),
-                 Paragraph("<b>Observer:</b>", styles['Normal']), Paragraph(str(project_meta.get('observer', '-')), styles['Normal'])]
-            ]
-            t_meta = Table(meta_data, colWidths=[90, 180, 70, 200])
-            t_meta.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F8F9FA')),
-                ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#DCDCDC')),
-                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-                ('PADDING', (0,0), (-1,-1), 5),
-                ('FONTSIZE', (0,0), (-1,-1), 9),
-            ]))
-            story.append(t_meta)
-            story.append(Spacer(1, 12))
-
-            story.append(Paragraph("<b>Adjustment Summary Statistics</b>", styles['Heading2']))
-            stat_data = [
-                ["Degrees of Freedom (f):", str(res_data['dof']), "A Posteriori Std. Dev. (σ₀):", f"{res_data['sigma0']:.4f}"],
-                ["Sum of Squares (Σv²):", f"{res_data['vTpv']:.4f} m²", "Chi-Square Test:", str(res_data['chi2_status'])]
-            ]
-            t_stat = Table(stat_data, colWidths=[140, 130, 140, 130])
-            t_stat.setStyle(TableStyle([
-                ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#DCDCDC')),
-                ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#FAFAFA')),
-                ('PADDING', (0,0), (-1,-1), 5),
-                ('FONTSIZE', (0,0), (-1,-1), 9),
-            ]))
-            story.append(t_stat)
-            story.append(Spacer(1, 12))
-
-            story.append(Paragraph("<b>Adjusted Reduced Levels (RL)</b>", styles['Heading2']))
-            stn_df = res_data['stations']
-            stn_table_data = [list(stn_df.columns)] + stn_df.values.tolist()
-            t_stn = Table(stn_table_data, colWidths=[140, 140, 140, 120])
-            t_stn.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E88E5')),
-                ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
-                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-                ('BOTTOMPADDING', (0,0), (-1,0), 5),
-                ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#DCDCDC')),
-                ('FONTSIZE', (0,0), (-1,-1), 9),
-                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F9F9F9')])
-            ]))
-            story.append(t_stn)
-            story.append(Spacer(1, 12))
-
-            story.append(Paragraph("<b>Observation Residuals</b>", styles['Heading2']))
-            res_df = res_data['residuals']
-            res_table_data = [list(res_df.columns)] + res_df.values.tolist()
-            t_res = Table(res_table_data, colWidths=[60, 60, 80, 80, 80, 90, 90])
-            t_res.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E88E5')),
-                ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
-                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-                ('BOTTOMPADDING', (0,0), (-1,0), 5),
-                ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#DCDCDC')),
-                ('FONTSIZE', (0,0), (-1,-1), 8),
-                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F9F9F9')])
-            ]))
-            story.append(t_res)
-
-            def add_header_footer(canvas, document):
-                canvas.saveState()
-                canvas.setFont('Helvetica', 8)
-                canvas.setFillColor(colors.HexColor('#777777'))
-                canvas.drawString(36, 20, "GEOADJUST Geodetic Network Adjustment Toolkit")
-                canvas.drawRightString(576, 20, f"Page {document.page}")
-                canvas.restoreState()
-
-            doc.build(story, onFirstPage=add_header_footer, onLaterPages=add_header_footer)
-            return pdf_buffer.getvalue()
-
-        pdf_bytes = generate_pdf_report(res, meta)
-        out_filename = st.session_state.get("custom_filename_1d", "1D_Adjustment_Report")
-
-        st.download_button(
-            label="📄 Download Official PDF Report with Header",
-            data=pdf_bytes,
-            file_name=f"{out_filename}.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-        )
 
 # =========================================================
 # TAB 2: 3D GNSS NETWORK ADJUSTMENT
@@ -553,14 +487,14 @@ with tab2:
                     Ta_coords = [const_x, const_y, const_z]
                     res3d = adjust_3d_network(df_input_3d, const_name=stn_const_name, Ta=Ta_coords, jns=1)
                     st.session_state["results_3d"] = res3d
-                    APP_REGISTRY[auth["room_id"]]["data_store"]["results_3d"] = res3d
+                    room_data["data_store"]["results_3d"] = res3d
                     st.success("3D Network Adjustment Complete!")
 
         except Exception as e:
             st.error(f"Data loading error: {e}")
 
-    if "results_3d" not in st.session_state and "results_3d" in APP_REGISTRY[auth["room_id"]]["data_store"]:
-        st.session_state["results_3d"] = APP_REGISTRY[auth["room_id"]]["data_store"]["results_3d"]
+    if "results_3d" not in st.session_state and "results_3d" in room_data["data_store"]:
+        st.session_state["results_3d"] = room_data["data_store"]["results_3d"]
 
     if "results_3d" in st.session_state:
         res3d = st.session_state["results_3d"]
@@ -572,65 +506,19 @@ with tab2:
         m3.metric("Degrees of Freedom", res3d["dof"])
         m4.metric("Sum VᵀPV", f"{res3d['vTpv']:.5f}")
 
-        excel_buffer_3d = io.BytesIO()
-        with pd.ExcelWriter(excel_buffer_3d, engine="openpyxl") as writer:
-            res3d["stations"].to_excel(writer, sheet_name="Adjusted Coordinates", index=False)
-            res3d["residuals"].to_excel(writer, sheet_name="Residuals", index=False)
-
-        st.download_button(
-            label="📥 Save & Download 3D Excel Output (.xlsx)",
-            data=excel_buffer_3d.getvalue(),
-            file_name=f"{custom_filename_3d}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
 
 # =========================================================
-# TAB 3: REAL-TIME TRACKING
+# TAB 3: REAL-TIME TRACKING & INTERCONNECTED MONITORING
 # =========================================================
 with tab3:
     st.header("📍 Real-Time Tracking & Room Collaboration")
-    st.info(f"Active Room Session: `{auth['room_id']}` as `{auth['username']}`")
-    
-    @st.cache_resource
-    def get_global_room_registry():
-        return {}
-    GLOBAL_ROOMS_REGISTRY = get_global_room_registry()
-    current_room = auth["room_id"]
-    user_id = auth["username"]
+    st.info(f"Active Room Session: `{auth['room_id']}` | Logged in as: `{auth['username']}`")
+    st.caption("All users sharing the same Room ID and Password are interconnected and can monitor each other's live positions and 1D levelling stations here.")
 
-    COLOR_PALETTE = ["blue", "red", "green", "orange", "violet", "gold", "black"]
-    COLOR_EMOJI = {"blue": "🔵", "red": "🔴", "green": "🟢", "orange": "🟠", "violet": "🟣", "gold": "🟡", "black": "⚫"}
-    ONLINE_THRESHOLD_SEC = 20
-    MARKER_SHADOW = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png"
-
-    if current_room not in GLOBAL_ROOMS_REGISTRY:
-        GLOBAL_ROOMS_REGISTRY[current_room] = {
-            "password": auth["password"],
-            "members": {
-                user_id: {
-                    "role": "Field Surveyor",
-                    "color": COLOR_PALETTE[0],
-                    "time_in": datetime.now(TIMEZONE),
-                    "time_out": None,
-                    "last_heartbeat": datetime.now(TIMEZONE)
-                }
-            },
-            "locations": {},
-            "unified_log": []
-        }
-    room_data = GLOBAL_ROOMS_REGISTRY[current_room]
-    if user_id not in room_data["members"]:
-        color_idx = len(room_data["members"]) % len(COLOR_PALETTE)
-        room_data["members"][user_id] = {
-            "role": "Field Surveyor",
-            "color": COLOR_PALETTE[color_idx],
-            "time_in": datetime.now(TIMEZONE),
-            "time_out": None,
-            "last_heartbeat": datetime.now(TIMEZONE)
-        }
-
+    # Auto-refresh every 10 seconds to fetch live locations
     refresh_count = st_autorefresh(interval=10000, key="tracking_autorefresh_t3")
+
+    # Get current user geolocation
     loc = get_geolocation(component_key=f"geo_t3_{refresh_count}")
     now_ts = datetime.now(TIMEZONE)
 
@@ -640,24 +528,75 @@ with tab3:
         lon = coords.get("longitude")
         alt = coords.get("altitude") or 0.0
         acc = coords.get("accuracy") or 0.0
-        user_color = room_data["members"][user_id]["color"]
         
-        tracks = room_data.setdefault("tracks", {})
-        track = tracks.setdefault(user_id, [])
-        track.append({"lat": lat, "lon": lon, "alt": alt, "ts": now_ts})
-        
-        room_data["locations"][user_id] = {
-            "user_id": user_id, "latitude": lat, "longitude": lon,
-            "altitude_m": alt, "accuracy_m": acc, "updated_at": now_ts.strftime("%Y-%m-%d %H:%M:%S"),
-            "last_seen": now_ts, "color": user_color
+        # Store user location in global room data
+        room_data["locations"][auth["username"]] = {
+            "latitude": lat,
+            "longitude": lon,
+            "altitude_m": alt,
+            "accuracy_m": acc,
+            "updated_at": now_ts.strftime("%Y-%m-%d %H:%M:%S")
         }
 
-    active_locs = {uid: l for uid, l in room_data["locations"].items() if room_data["members"].get(uid, {}).get("time_out") is None}
-    if active_locs:
-        st.success("GPS Active & Streaming to Room.")
-        st.json(active_locs)
-    else:
-        st.info("Awaiting GPS location signal...")
+    # Display active members & locations in the room
+    col_map, col_info = st.columns([2, 1])
+
+    with col_info:
+        st.subheader("👥 Room Members & Stations")
+        active_locations = room_data.get("locations", {})
+        if active_locations:
+            df_locs = pd.DataFrame([
+                {"User": u, "Lat": d["latitude"], "Lon": d["longitude"], "Updated": d["updated_at"]}
+                for u, d in active_locations.items()
+            ])
+            st.dataframe(df_locs, use_container_width=True, hide_index=True)
+        else:
+            st.info("Awaiting GPS location signal from users...")
+
+        st.markdown("#### 📏 Auto-Captured Levelling Stations")
+        lev_pos = room_data.get("levelling_positions", [])
+        if lev_pos:
+            df_lev_pos = pd.DataFrame(lev_pos)
+            st.dataframe(df_lev_pos, use_container_width=True, hide_index=True)
+        else:
+            st.info("No auto-captured 1D levelling stations yet.")
+
+    with col_map:
+        st.subheader("🗺️ Live Team Map")
+        # Initialize Folium Map centered on Malaysia or user's location
+        center_lat = 3.1390
+        center_lon = 101.6869
+        if active_locations:
+            first_user = list(active_locations.values())[0]
+            center_lat = first_user["latitude"]
+            center_lon = first_user["longitude"]
+
+        m = folium.Map(location=[center_lat, center_lon], zoom_start=13)
+
+        # Add user position markers
+        for idx, (usr, info) in enumerate(active_locations.items()):
+            color = COLOR_PALETTE[idx % len(COLOR_PALETTE)]
+            folium.Marker(
+                [info["latitude"], info["longitude"]],
+                popup=f"<b>User:</b> {usr}<br><b>Updated:</b> {info['updated_at']}",
+                tooltip=usr,
+                icon=folium.Icon(color="blue" if usr == auth["username"] else "orange", icon="user", prefix="fa")
+            ).add_to(m)
+
+        # Add 1D Levelling station auto-positions
+        for lev in lev_pos:
+            folium.CircleMarker(
+                location=[lev["lat"], lev["lon"]],
+                radius=8,
+                color="#43A047",
+                fill=True,
+                fill_color="#43A047",
+                popup=f"<b>Station:</b> {lev['station']}<br><b>Observer:</b> {lev['observer']}<br><b>Time:</b> {lev['timestamp']}",
+                tooltip=f"Station: {lev['station']}"
+            ).add_to(m)
+
+        st_folium(m, width=700, height=450, key=f"folium_map_{refresh_count}")
+
 
 # =========================================================
 # TAB 4: DATUM TRANSFORMATION
@@ -703,7 +642,7 @@ with tab4:
     elif mode == "Map Projection":
         st.subheader("🗺️ Map Projection System")
         proj_region = st.selectbox("Select Region:", ["Peninsular Malaysia", "Sabah and Sarawak"], key="proj_region")
-        proj_modules = ["1. GDM2000 to RSO Geocentric", "2. RSO Geocentric to GDM2000"] if proj_region == "Peninsular Malaysia" else ["1. GDM2000 to RSO Geocentric", "2. RSO Geocentric to GDM2000"]
+        proj_modules = ["1. GDM2000 to RSO Geocentric", "2. RSO Geocentric to GDM2000"]
         sel_p_module = st.selectbox("Transformation Module:", proj_modules, key="proj_module_sel")
         module_title = sel_p_module.split(". ", 1)[1]
         from_name, to_name = [x.strip() for x in module_title.split(" to ")]
