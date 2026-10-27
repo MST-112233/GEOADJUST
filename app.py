@@ -155,7 +155,9 @@ if not auth["logged_in"]:
                             "last_active": now_ts,
                             "data_store": {},
                             "locations": {},
-                            "levelling_positions": []
+                            "levelling_positions": [],
+                            "tracking_logs": [],
+                            "chat_logs": []
                         }
                     
                     auth["logged_in"] = True
@@ -181,7 +183,9 @@ else:
         "last_active": datetime.now(TIMEZONE),
         "data_store": {},
         "locations": {},
-        "levelling_positions": []
+        "levelling_positions": [],
+        "tracking_logs": [],
+        "chat_logs": []
     }
 
 room_data = APP_REGISTRY[room_key]
@@ -212,7 +216,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 # =========================================================
-# TAB 1: 1D NETWORK ADJUSTMENT WITH AUTO-POSITIONING
+# TAB 1: 1D NETWORK ADJUSTMENT WITH AUTO-POSITIONING & DOWNLOADS
 # =========================================================
 with tab1:
     st.header("📏 1D Leveling Network Adjustment")
@@ -307,14 +311,15 @@ with tab1:
             auto_gps_enabled = st.checkbox("Enable Auto-Take GPS Positioning for current observation", value=True, key="auto_gps_1d_toggle")
             show_gps_details = st.checkbox("👁️ View Captured GPS Coordinates", value=True, key="show_gps_1d_toggle")
 
-            current_gps_lat, current_gps_lon = None, None
+            current_gps_lat, current_gps_lon, current_gps_alt = None, None, 0.0
             if auto_gps_enabled:
                 loc_1d = get_geolocation(component_key=f"geo_1d_{datetime.now().second}")
                 if loc_1d and "coords" in loc_1d:
                     current_gps_lat = loc_1d["coords"].get("latitude")
                     current_gps_lon = loc_1d["coords"].get("longitude")
+                    current_gps_alt = loc_1d["coords"].get("altitude") or 0.0
                     if show_gps_details:
-                        st.success(f"🛰️ GPS Position Acquired: Lat: `{current_gps_lat:.6f}`, Lon: `{current_gps_lon:.6f}`")
+                        st.success(f"🛰️ GPS Position Acquired: Lat: `{current_gps_lat:.6f}`, Lon: `{current_gps_lon:.6f}`, Alt: `{current_gps_alt:.2f}m`")
 
             with st.form("obs_form", clear_on_submit=True):
                 col_o1, col_o2 = st.columns(2)
@@ -329,6 +334,7 @@ with tab1:
 
                 submitted = st.form_submit_button("➕ Add Observation Record", use_container_width=True)
                 if submitted:
+                    now_str = datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
                     record_entry = {
                         "From": from_stn.strip(),
                         "To": to_stn.strip(),
@@ -336,18 +342,29 @@ with tab1:
                         "Foresight (m)": fs_val,
                         "Distance (m)": dist_val,
                         "Observer": auth["username"],
-                        "Timestamp": datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+                        "Timestamp": now_str
                     }
                     if current_gps_lat and current_gps_lon:
                         record_entry["Latitude"] = current_gps_lat
                         record_entry["Longitude"] = current_gps_lon
-                        # Push to room levelling positions for tracking monitoring
+                        record_entry["Altitude"] = current_gps_alt
+                        
+                        # Push to room levelling positions & tracking log
                         room_data["levelling_positions"].append({
                             "station": to_stn.strip(),
                             "lat": current_gps_lat,
                             "lon": current_gps_lon,
+                            "altitude": current_gps_alt,
                             "observer": auth["username"],
-                            "timestamp": datetime.now(TIMEZONE).strftime("%H:%M:%S")
+                            "timestamp": now_str
+                        })
+                        room_data["tracking_logs"].append({
+                            "timestamp": now_str,
+                            "username": auth["username"],
+                            "latitude": current_gps_lat,
+                            "longitude": current_gps_lon,
+                            "altitude": current_gps_alt,
+                            "source": f"1D Levelling Station ({to_stn.strip()})"
                         })
 
                     st.session_state["manual_records"].append(record_entry)
@@ -446,6 +463,114 @@ with tab1:
             st.subheader("📏 Observation Residuals")
             st.dataframe(res["residuals"], use_container_width=True, hide_index=True)
 
+        st.markdown("---")
+        st.subheader("📥 Download 1D Levelling Reports")
+
+        # CSV Export of Adjusted Stations
+        csv_stations = res["stations"].to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📄 Download Adjusted Levels as CSV",
+            data=csv_stations,
+            file_name="1D_Adjusted_Stations.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
+        # PDF Report Generation
+        from reportlab.lib.pagesizes import letter
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib import colors
+
+        def generate_pdf_report(res_data, project_meta):
+            pdf_buffer = io.BytesIO()
+            doc = SimpleDocTemplate(pdf_buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+            story = []
+            styles = getSampleStyleSheet()
+
+            title_style = ParagraphStyle(
+                'ReportTitle', parent=styles['Heading1'], fontSize=18,
+                textColor=colors.HexColor('#1E88E5'), alignment=1, spaceAfter=4
+            )
+            subtitle_style = ParagraphStyle(
+                'ReportSubtitle', parent=styles['Normal'], fontSize=9,
+                textColor=colors.HexColor('#555555'), alignment=1, spaceAfter=12
+            )
+
+            story.append(Paragraph("GEOADJUST — 1D Levelling Adjustment Report", title_style))
+            story.append(Paragraph("Geodetic Network Least Squares Adjustment System", subtitle_style))
+            story.append(Spacer(1, 8))
+
+            meta_data = [
+                [Paragraph("<b>Project Name:</b>", styles['Normal']), Paragraph(str(project_meta.get('name', '-')), styles['Normal']),
+                 Paragraph("<b>Date:</b>", styles['Normal']), Paragraph(str(project_meta.get('date', '-')), styles['Normal'])],
+                [Paragraph("<b>Instrument:</b>", styles['Normal']), Paragraph(str(project_meta.get('instrument', '-')), styles['Normal']),
+                 Paragraph("<b>Observer:</b>", styles['Normal']), Paragraph(str(project_meta.get('observer', '-')), styles['Normal'])]
+            ]
+            t_meta = Table(meta_data, colWidths=[90, 180, 70, 200])
+            t_meta.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F8F9FA')),
+                ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#DCDCDC')),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('PADDING', (0,0), (-1,-1), 5),
+                ('FONTSIZE', (0,0), (-1,-1), 9),
+            ]))
+            story.append(t_meta)
+            story.append(Spacer(1, 12))
+
+            story.append(Paragraph("<b>Adjustment Summary Statistics</b>", styles['Heading2']))
+            stat_data = [
+                ["Degrees of Freedom (f):", str(res_data['dof']), "A Posteriori Std. Dev. (σ₀):", f"{res_data['sigma0']:.4f}"],
+                ["Sum of Squares (Σv²):", f"{res_data['vTpv']:.4f} m²", "Chi-Square Test:", str(res_data['chi2_status'])]
+            ]
+            t_stat = Table(stat_data, colWidths=[140, 130, 140, 130])
+            t_stat.setStyle(TableStyle([
+                ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#DCDCDC')),
+                ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#FAFAFA')),
+                ('PADDING', (0,0), (-1,-1), 5),
+                ('FONTSIZE', (0,0), (-1,-1), 9),
+            ]))
+            story.append(t_stat)
+            story.append(Spacer(1, 12))
+
+            story.append(Paragraph("<b>Adjusted Reduced Levels (RL)</b>", styles['Heading2']))
+            stn_df = res_data['stations']
+            stn_table_data = [list(stn_df.columns)] + stn_df.values.tolist()
+            t_stn = Table(stn_table_data, colWidths=[140, 140, 140, 120])
+            t_stn.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E88E5')),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                ('BOTTOMPADDING', (0,0), (-1,0), 5),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#DCDCDC')),
+                ('FONTSIZE', (0,0), (-1,-1), 9),
+                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F9F9F9')])
+            ]))
+            story.append(t_stn)
+
+            def add_header_footer(canvas, document):
+                canvas.saveState()
+                canvas.setFont('Helvetica', 8)
+                canvas.setFillColor(colors.HexColor('#777777'))
+                canvas.drawString(36, 20, "GEOADJUST Geodetic Network Adjustment Toolkit")
+                canvas.drawRightString(576, 20, f"Page {document.page}")
+                canvas.restoreState()
+
+            doc.build(story, onFirstPage=add_header_footer, onLaterPages=add_header_footer)
+            return pdf_buffer.getvalue()
+
+        pdf_bytes = generate_pdf_report(res, meta)
+        out_filename = st.session_state.get("custom_filename_1d", "1D_Adjustment_Report")
+
+        st.download_button(
+            label="📄 Download Official PDF Report",
+            data=pdf_bytes,
+            file_name=f"{out_filename}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+
 
 # =========================================================
 # TAB 2: 3D GNSS NETWORK ADJUSTMENT
@@ -508,12 +633,12 @@ with tab2:
 
 
 # =========================================================
-# TAB 3: REAL-TIME TRACKING & INTERCONNECTED MONITORING
+# TAB 3: REAL-TIME TRACKING & DOWNLOADS (TIME, LOCATION, ALTITUDE, CHAT)
 # =========================================================
 with tab3:
     st.header("📍 Real-Time Tracking & Room Collaboration")
     st.info(f"Active Room Session: `{auth['room_id']}` | Logged in as: `{auth['username']}`")
-    st.caption("All users sharing the same Room ID and Password are interconnected and can monitor each other's live positions and 1D levelling stations here.")
+    st.caption("All users sharing the same Room ID and Password are interconnected and can monitor live positions, altitude, and exchange team notes.")
 
     # Auto-refresh every 10 seconds to fetch live locations
     refresh_count = st_autorefresh(interval=10000, key="tracking_autorefresh_t3")
@@ -528,17 +653,27 @@ with tab3:
         lon = coords.get("longitude")
         alt = coords.get("altitude") or 0.0
         acc = coords.get("accuracy") or 0.0
+        timestamp_str = now_ts.strftime("%Y-%m-%d %H:%M:%S")
         
-        # Store user location in global room data
+        # Store user location
         room_data["locations"][auth["username"]] = {
             "latitude": lat,
             "longitude": lon,
             "altitude_m": alt,
             "accuracy_m": acc,
-            "updated_at": now_ts.strftime("%Y-%m-%d %H:%M:%S")
+            "updated_at": timestamp_str
         }
 
-    # Display active members & locations in the room
+        # Log entry for tracking export
+        room_data["tracking_logs"].append({
+            "timestamp": timestamp_str,
+            "username": auth["username"],
+            "latitude": lat,
+            "longitude": lon,
+            "altitude": alt,
+            "source": "GPS Live Stream"
+        })
+
     col_map, col_info = st.columns([2, 1])
 
     with col_info:
@@ -546,24 +681,68 @@ with tab3:
         active_locations = room_data.get("locations", {})
         if active_locations:
             df_locs = pd.DataFrame([
-                {"User": u, "Lat": d["latitude"], "Lon": d["longitude"], "Updated": d["updated_at"]}
+                {"User": u, "Lat": d["latitude"], "Lon": d["longitude"], "Alt (m)": d["altitude_m"], "Updated": d["updated_at"]}
                 for u, d in active_locations.items()
             ])
             st.dataframe(df_locs, use_container_width=True, hide_index=True)
         else:
             st.info("Awaiting GPS location signal from users...")
 
-        st.markdown("#### 📏 Auto-Captured Levelling Stations")
-        lev_pos = room_data.get("levelling_positions", [])
-        if lev_pos:
-            df_lev_pos = pd.DataFrame(lev_pos)
-            st.dataframe(df_lev_pos, use_container_width=True, hide_index=True)
-        else:
-            st.info("No auto-captured 1D levelling stations yet.")
+        st.markdown("#### 💬 Room Chat & Team Notes")
+        with st.form("chat_form", clear_on_submit=True):
+            chat_msg = st.text_input("Send message to room team:")
+            submitted_chat = st.form_submit_button("📤 Send", use_container_width=True)
+            if submitted_chat and chat_msg.strip():
+                chat_entry = {
+                    "timestamp": datetime.now(TIMEZONE).strftime("%H:%M:%S"),
+                    "sender": auth["username"],
+                    "message": chat_msg.strip()
+                }
+                room_data["chat_logs"].append(chat_entry)
+                st.success("Message sent!")
+
+        chat_history = room_data.get("chat_logs", [])
+        if chat_history:
+            for c in reversed(chat_history[-10:]):
+                st.markdown(f"<small><b>[{c['timestamp']}] {c['sender']}:</b> {c['message']}</small>", unsafe_allow_html=True)
+
+        # --- EXPORT TRACKING & CHAT LOGS ---
+        st.markdown("---")
+        st.subheader("📥 Export Tracking Data")
+
+        # CSV Export for Tracking Logs (Time, Location, Altitude)
+        tracking_logs = room_data.get("tracking_logs", [])
+        if tracking_logs:
+            df_tracks = pd.DataFrame(tracking_logs)
+            csv_tracks = df_tracks.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📊 Download Tracking Log (CSV)",
+                data=csv_tracks,
+                file_name=f"Tracking_Log_{auth['room_id']}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+        # TXT Export for Chat & Activity Logs
+        if chat_history or tracking_logs:
+            chat_export_str = f"=== GEOADJUST TRACKING & CHAT REPORT (ROOM: {auth['room_id']}) ===\n\n"
+            chat_export_str += "--- CHAT LOGS ---\n"
+            for c in chat_history:
+                chat_export_str += f"[{c['timestamp']}] {c['sender']}: {c['message']}\n"
+            chat_export_str += "\n--- POSITION LOGS ---\n"
+            for t in tracking_logs:
+                chat_export_str += f"[{t['timestamp']}] {t['username']} | Lat: {t['latitude']} | Lon: {t['longitude']} | Alt: {t.get('altitude', 0)}m\n"
+
+            st.download_button(
+                label="📝 Download Full Room Report (TXT)",
+                data=chat_export_str.encode('utf-8'),
+                file_name=f"Room_Activity_Report_{auth['room_id']}.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
 
     with col_map:
         st.subheader("🗺️ Live Team Map")
-        # Initialize Folium Map centered on Malaysia or user's location
         center_lat = 3.1390
         center_lon = 101.6869
         if active_locations:
@@ -575,15 +754,15 @@ with tab3:
 
         # Add user position markers
         for idx, (usr, info) in enumerate(active_locations.items()):
-            color = COLOR_PALETTE[idx % len(COLOR_PALETTE)]
             folium.Marker(
                 [info["latitude"], info["longitude"]],
-                popup=f"<b>User:</b> {usr}<br><b>Updated:</b> {info['updated_at']}",
+                popup=f"<b>User:</b> {usr}<br><b>Alt:</b> {info['altitude_m']}m<br><b>Updated:</b> {info['updated_at']}",
                 tooltip=usr,
                 icon=folium.Icon(color="blue" if usr == auth["username"] else "orange", icon="user", prefix="fa")
             ).add_to(m)
 
         # Add 1D Levelling station auto-positions
+        lev_pos = room_data.get("levelling_positions", [])
         for lev in lev_pos:
             folium.CircleMarker(
                 location=[lev["lat"], lev["lon"]],
@@ -591,7 +770,7 @@ with tab3:
                 color="#43A047",
                 fill=True,
                 fill_color="#43A047",
-                popup=f"<b>Station:</b> {lev['station']}<br><b>Observer:</b> {lev['observer']}<br><b>Time:</b> {lev['timestamp']}",
+                popup=f"<b>Station:</b> {lev['station']}<br><b>Observer:</b> {lev['observer']}<br><b>Alt:</b> {lev.get('altitude', 0)}m<br><b>Time:</b> {lev['timestamp']}",
                 tooltip=f"Station: {lev['station']}"
             ).add_to(m)
 
