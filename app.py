@@ -2,6 +2,7 @@ import io
 import os
 import json
 import re
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -9,10 +10,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
-from streamlit_js_eval import get_geolocation
-
-import folium
-from streamlit_folium import st_folium
+from streamlit_js_eval import get_geolocation, streamlit_js_eval
 
 from network_1d import adjust_1d_network
 from network_3d import adjust_3d_network
@@ -22,10 +20,16 @@ import datum_transform as dt
 
 # --- Helper Functions for Coordinate Parsing & Formatting ---
 def parse_coordinate_to_deg(val):
+    """
+    Parses a string or numeric value to Decimal Degrees.
+    Supports DD format (e.g., 1.483333 or "1.483333")
+    and DMS strings (e.g., "1° 29' 0.00\"" or "1 29 0.0" or "1d 29m 0s").
+    """
     if pd.isna(val):
         return None
     if isinstance(val, (int, float)):
         return float(val)
+    
     val_str = str(val).strip()
     pattern = r'^\s*([+-]?\d+)[°\s_dD-]+(\d+)[′\'\s_mM-]+(\d+(?:\.\d+)?)[″"\s_sS]*\s*$'
     match = re.match(pattern, val_str)
@@ -35,12 +39,14 @@ def parse_coordinate_to_deg(val):
         s = float(match.group(3))
         sign = -1.0 if d < 0 or val_str.startswith('-') else 1.0
         return sign * (abs(d) + m / 60.0 + s / 3600.0)
+    
     try:
         return float(val_str)
     except ValueError:
         raise ValueError(f"Unable to parse coordinate: '{val}'")
 
 def format_deg_to_dms_str(deg):
+    """Formats a decimal degree float into a clean DMS string (DD° MM' SS.SS")."""
     if pd.isna(deg) or deg is None:
         return ""
     d, m, s = dt.deg_to_dms(deg)
@@ -67,145 +73,484 @@ st.markdown(
         color: #555555;
         margin-bottom: 1.5rem;
     }
-    .user-banner {
-        background-color: #E3F2FD;
-        padding: 10px 15px;
-        border-radius: 8px;
-        color: #0D47A1;
-        font-weight: 600;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 15px;
-    }
     </style>
 """,
     unsafe_allow_html=True,
 )
 
-# --- GLOBAL SESSION REGISTRY FOR 2-HOUR EXPIRY & INTERCONNECTED ROOMS ---
+# Title Header
+st.markdown("<h1 class='main-title'>GEOADJUST</h1>", unsafe_allow_html=True)
+st.markdown(
+    "<p class='sub-title'>Geodetic Network Adjustment & Spatial Toolkit</p>",
+    unsafe_allow_html=True,
+)
+
+# --- GLOBAL CROSS-DEVICE MEMORY REGISTRY ---
 @st.cache_resource
-def get_global_app_registry():
+def get_global_room_registry():
     return {}
 
-APP_REGISTRY = get_global_app_registry()
-TIMEZONE = ZoneInfo("Asia/Kuala_Lumpur")
-INACTIVITY_TIMEOUT_HOURS = 2
-COLOR_PALETTE = ["#1E88E5", "#E53935", "#43A047", "#FB8C00", "#8E24AA", "#FDD835", "#00ACC1"]
+GLOBAL_ROOMS_REGISTRY = get_global_room_registry()
+
+COLOR_PALETTE = ["blue", "red", "green", "orange", "violet", "gold", "black"]
+COLOR_EMOJI = {
+    "blue": "🔵", "red": "🔴", "green": "🟢", "orange": "🟠",
+    "violet": "🟣", "gold": "🟡", "black": "⚫", "grey": "⚪",
+}
+
+TIMEZONE = ZoneInfo("Asia/Kuala_Lumpur")  # GMT+8
+ONLINE_THRESHOLD_SEC = 20      
+STALE_ROOM_MINUTES = 60        
+MAX_TRACK_POINTS = 500         
+MARKER_ICON_BASE = "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-{color}.png"
+MARKER_SHADOW = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png"
 
 
 # =========================================================
-# FRONT LOGIN SCREEN
+# Real-Time Tracking Helper Functions
 # =========================================================
-if "app_auth" not in st.session_state:
-    st.session_state["app_auth"] = {
-        "logged_in": False,
-        "username": "",
-        "room_id": "",
-        "password": ""
+def now_local():
+    return datetime.now(TIMEZONE)
+
+
+def fmt_time(dt_val):
+    return dt_val.strftime("%Y-%m-%d %H:%M:%S") if dt_val else "-"
+
+
+def today_str():
+    return now_local().strftime("%Y-%m-%d")
+
+
+def gps_quality_label(acc):
+    if acc is None:
+        return "🔴 No Fix"
+    if acc <= 15:
+        return "🟢 Strong"
+    elif acc <= 50:
+        return "🟡 Medium"
+    return "🔴 Weak"
+
+
+def is_room_stale(room_data):
+    last_seen_times = [
+        loc.get("last_seen") for loc in room_data.get("locations", {}).values() if loc.get("last_seen")
+    ]
+    if last_seen_times:
+        latest = max(last_seen_times)
+    else:
+        time_ins = [m.get("time_in") for m in room_data.get("members", {}).values() if m.get("time_in")]
+        if not time_ins:
+            return True
+        latest = max(time_ins)
+    return (now_local() - latest) > timedelta(minutes=STALE_ROOM_MINUTES)
+
+
+def purge_room(registry, room_key):
+    registry.pop(room_key, None)
+
+
+def log_event(room_data, room_key, user_id, event_type, extra=None):
+    entry = {
+        "Timestamp": fmt_time(now_local()),
+        "Room_ID": room_key,
+        "User_ID": user_id,
+        "Event_Type": event_type,
+        "Latitude": None,
+        "Longitude": None,
+        "Altitude_m": None,
+        "Accuracy_m": None,
+        "Chat_Message": "",
     }
+    if extra:
+        entry.update(extra)
+    room_data["unified_log"].append(entry)
 
-auth = st.session_state["app_auth"]
 
-if not auth["logged_in"]:
-    st.markdown("<h1 class='main-title'>🌐 GEOADJUST</h1>", unsafe_allow_html=True)
-    st.markdown("<p class='sub-title'>Geodetic Network Adjustment & Spatial Toolkit</p>", unsafe_allow_html=True)
-    
-    col_l1, col_l2, col_l3 = st.columns([1, 1.5, 1])
-    with col_l2:
-        st.markdown(
-            """
-            <div style="background-color: #ffffff; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08);">
-                <h3 style="color: #1E88E5; text-align: center; margin-bottom: 5px;">🔐 Portal Login</h3>
-                <p style="color: #666; font-size: 0.85rem; text-align: center; margin-bottom: 20px;">Enter identical Room ID and Password to collaborate and track positions.</p>
-            </div>
-            """,
-            unsafe_allow_html=True
+def build_members_table(room_data):
+    rows = []
+    for uid, minfo in room_data["members"].items():
+        if minfo.get("time_out") is not None:
+            continue
+        loc = room_data["locations"].get(uid)
+        online = bool(loc and loc.get("last_seen") and (now_local() - loc["last_seen"]) <= timedelta(seconds=ONLINE_THRESHOLD_SEC))
+        legend = f"{COLOR_EMOJI.get(minfo.get('color'), '⚪')} {minfo.get('color', '-')}"
+        rows.append(
+            {
+                "Legend": legend,
+                "User ID": uid,
+                "Status": "🟢 Online" if online else "🟡 Offline",
+                "Latitude": loc["latitude"] if loc else None,
+                "Longitude": loc["longitude"] if loc else None,
+                "Altitude (m)": loc["altitude_m"] if loc else None,
+                "GPS Signal": gps_quality_label(loc["accuracy_m"]) if loc else "🔴 No Fix",
+                "Last Update": loc["updated_at"] if loc else "-",
+                "Time In": minfo["time_in"].strftime("%Y-%m-%d %H:%M:%S") if minfo.get("time_in") else "-",
+            }
         )
+    return pd.DataFrame(rows)
+
+
+def build_log_dataframe(room_data, user_filter=None):
+    log = room_data.get("unified_log", [])
+    df = pd.DataFrame(log)
+    if df.empty:
+        return df
+    if user_filter:
+        df = df[df["User_ID"] == user_filter]
+    return df.sort_values("Timestamp", ascending=False).reset_index(drop=True)
+
+
+SHEET_INVALID_CHARS = set('[]:*?/\\')
+
+
+def sanitize_sheet_name(name, used_names):
+    clean = "".join(c for c in name if c not in SHEET_INVALID_CHARS).strip() or "User"
+    clean = clean[:31]
+    base, i = clean, 2
+    while clean in used_names:
+        suffix = f"_{i}"
+        clean = base[: 31 - len(suffix)] + suffix
+        i += 1
+    used_names.add(clean)
+    return clean
+
+
+def build_full_log_workbook(room_data):
+    buffer = io.BytesIO()
+    used_sheet_names = set()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df_overall = build_log_dataframe(room_data)
+        overall_name = sanitize_sheet_name("Overall", used_sheet_names)
+        (df_overall if not df_overall.empty else pd.DataFrame()).to_excel(
+            writer, sheet_name=overall_name, index=False
+        )
+        for name in room_data.get("members", {}).keys():
+            df_user = build_log_dataframe(room_data, user_filter=name)
+            sheet_name = sanitize_sheet_name(name, used_sheet_names)
+            (df_user if not df_user.empty else pd.DataFrame()).to_excel(
+                writer, sheet_name=sheet_name, index=False
+            )
+    return buffer.getvalue()
+
+
+def marker_icon_urls(color):
+    return MARKER_ICON_BASE.format(color=color), MARKER_SHADOW
+
+
+def generate_kml_export(room_data, selected_user="🌐 All Users (Combined)"):
+    kml = ET.Element('kml', xmlns="http://www.opengis.net/kml/2.2")
+    document = ET.SubElement(kml, 'Document')
+    
+    name = ET.SubElement(document, 'name')
+    name.text = f"GEOADJUST GPS Tracks - {selected_user}"
+
+    tracks_dict = room_data.get("tracks", {})
+
+    target_users = list(tracks_dict.keys()) if selected_user == "🌐 All Users (Combined)" else [selected_user]
+
+    for uid in target_users:
+        user_track = tracks_dict.get(uid, [])
+        if not user_track:
+            continue
         
-        with st.form("portal_login_form"):
-            input_username = st.text_input("👤 Username", value="")
-            input_room = st.text_input("🏠 Room ID", value="")
-            input_pass = st.text_input("🔑 Password", type="password", value="")
+        style_id = f"style_{uid}"
+        style = ET.SubElement(document, 'Style', id=style_id)
+        line_style = ET.SubElement(style, 'LineStyle')
+        ET.SubElement(line_style, 'color').text = "7f00ffff"
+        ET.SubElement(line_style, 'width').text = "4"
+        
+        folder = ET.SubElement(document, 'Folder')
+        ET.SubElement(folder, 'name').text = f"Track - {uid}"
+        
+        placemark = ET.SubElement(folder, 'Placemark')
+        ET.SubElement(placemark, 'name').text = f"Path: {uid}"
+        ET.SubElement(placemark, 'styleUrl').text = f"#{style_id}"
+        
+        line_string = ET.SubElement(placemark, 'LineString')
+        ET.SubElement(line_string, 'extrude').text = "1"
+        ET.SubElement(line_string, 'tessellate').text = "1"
+        ET.SubElement(line_string, 'altitudeMode').text = "relativeToGround"
+        
+        coords_str = " ".join([f"{p['lon']},{p['lat']},{p.get('alt', 0)}" for p in user_track])
+        ET.SubElement(line_string, 'coordinates').text = coords_str
+
+    return ET.tostring(kml, encoding='utf-8', method='xml')
+
+
+def build_multi_playback_map_html(room_data, selected_user="🌐 All Users (Combined)"):
+    tracks_dict = room_data.get("tracks", {})
+    members_dict = room_data.get("members", {})
+    
+    payload = {}
+    max_steps = 0
+    
+    target_users = list(tracks_dict.keys()) if selected_user == "🌐 All Users (Combined)" else [selected_user]
+
+    for uid in target_users:
+        track = tracks_dict.get(uid, [])
+        if track:
+            color = members_dict.get(uid, {}).get("color", "blue")
+            icon_url, _ = marker_icon_urls(color)
+            payload[uid] = {
+                "color": color,
+                "icon_url": icon_url,
+                "points": [{"lat": p["lat"], "lon": p["lon"], "time": fmt_time(p["ts"])} for p in track]
+            }
+            if len(track) > max_steps:
+                max_steps = len(track)
+
+    payload_json = json.dumps(payload)
+
+    return f"""
+    <div id="playback-container" style="height:380px; width:100%; position:relative;">
+        <div id="playback-map" style="height:320px; width:100%;"></div>
+        <div style="padding:10px; background:#f8f9fa; display:flex; align-items:center; gap:10px;">
+            <button id="playBtn" onclick="togglePlay()" style="padding:5px 15px; background:#1E88E5; color:white; border:none; border-radius:4px; cursor:pointer;">▶ Play</button>
+            <input type="range" id="timeSlider" min="0" max="{max(0, max_steps-1)}" value="0" oninput="seekPath(this.value)" style="flex-grow:1;">
+            <span id="timeDisplay" style="font-size:12px; font-family:sans-serif; color:#333;">--:--:--</span>
+        </div>
+    </div>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+    <script>
+        var trackData = {payload_json};
+        var users = Object.keys(trackData);
+        
+        if (users.length > 0) {{
+            var firstUser = users[0];
+            var firstPt = trackData[firstUser].points[0];
             
-            submit_portal = st.form_submit_button("🚀 Enter GEOADJUST", use_container_width=True, type="primary")
+            var pbMap = L.map('playback-map').setView([firstPt.lat, firstPt.lon], 15);
+            L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png').addTo(pbMap);
             
-            if submit_portal:
-                if not input_username.strip() or not input_room.strip() or not input_pass.strip():
-                    st.error("Please fill in Username, Room ID, and Password.")
-                else:
-                    room_key = input_room.strip()
-                    user_key = input_username.strip()
-                    now_ts = datetime.now(TIMEZONE)
-                    
-                    if room_key in APP_REGISTRY:
-                        room_info = APP_REGISTRY[room_key]
-                        last_active = room_info.get("last_active", now_ts)
-                        if (now_ts - last_active) > timedelta(hours=INACTIVITY_TIMEOUT_HOURS):
-                            APP_REGISTRY.pop(room_key, None)
-                            st.warning("⚠️ Previous session for this room expired due to 2 hours of inactivity. Starting fresh session.")
-                        else:
-                            if room_info["password"] != input_pass:
-                                st.error("Incorrect password for this active room!")
-                                st.stop()
-                    
-                    if room_key not in APP_REGISTRY:
-                        APP_REGISTRY[room_key] = {
-                            "password": input_pass,
-                            "last_active": now_ts,
-                            "data_store": {},
-                            "locations": {},
-                            "levelling_positions": [],
-                            "tracking_logs": [],
-                            "chat_logs": []
-                        }
-                    
-                    auth["logged_in"] = True
-                    auth["username"] = user_key
-                    auth["room_id"] = room_key
-                    auth["password"] = input_pass
-                    
-                    st.success("Login Successful!")
-                    st.rerun()
-    st.stop()
+            var markers = {{}};
+            var polylines = {{}};
+            var allBounds = L.latLngBounds();
+
+            users.forEach(function(uid) {{
+                var uData = trackData[uid];
+                var latlngs = uData.points.map(p => [p.lat, p.lon]);
+                
+                var poly = L.polyline(latlngs, {{color: uData.color, weight: 3, opacity: 0.7}}).addTo(pbMap);
+                polylines[uid] = poly;
+                allBounds.extend(poly.getBounds());
+                
+                var icon = L.icon({{
+                    iconUrl: uData.icon_url,
+                    shadowUrl: "{MARKER_SHADOW}",
+                    iconSize: [25, 41],
+                    iconAnchor: [12, 41]
+                }});
+                
+                markers[uid] = L.marker([uData.points[0].lat, uData.points[0].lon], {{icon: icon}})
+                    .bindTooltip("📍 " + uid)
+                    .addTo(pbMap);
+            }});
+            
+            pbMap.fitBounds(allBounds);
+            
+            var currentIndex = 0;
+            var maxSteps = {max_steps};
+            var isPlaying = false;
+            var interval = null;
+
+            function updatePositions(index) {{
+                currentIndex = index;
+                var latestTime = "--:--:--";
+                
+                users.forEach(function(uid) {{
+                    var pts = trackData[uid].points;
+                    var idx = Math.min(index, pts.length - 1);
+                    var p = pts[idx];
+                    markers[uid].setLatLng([p.lat, p.lon]);
+                    latestTime = p.time;
+                }});
+                
+                document.getElementById('timeSlider').value = index;
+                document.getElementById('timeDisplay').innerText = latestTime;
+            }}
+
+            function seekPath(val) {{
+                updatePositions(parseInt(val));
+            }}
+
+            function togglePlay() {{
+                var btn = document.getElementById('playBtn');
+                if (isPlaying) {{
+                    clearInterval(interval);
+                    isPlaying = false;
+                    btn.innerText = "▶ Play";
+                }} else {{
+                    isPlaying = true;
+                    btn.innerText = "⏸ Pause";
+                    interval = setInterval(function() {{
+                        if (currentIndex >= maxSteps - 1) {{
+                            clearInterval(interval);
+                            isPlaying = false;
+                            btn.innerText = "▶ Play";
+                        }} else {{
+                            updatePositions(currentIndex + 1);
+                        }}
+                    }}, 700);
+                }}
+            }}
+            updatePositions(0);
+        }}
+    </script>
+    """
 
 
-# =========================================================
-# MAIN GEOADJUST DASHBOARD (Post-Login)
-# =========================================================
+def build_base_map_html(center, zoom, room_id):
+    return f"""
+    <div id="geoadjust-map-anchor" data-room="{room_id}" style="height:450px;width:100%;">
+      <div id="geoadjust-leaflet-map" style="height:100%;width:100%;"></div>
+    </div>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+    <script>
+      var geoMap = L.map('geoadjust-leaflet-map').setView([{center[0]}, {center[1]}], {zoom});
+      L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+          maxZoom: 19,
+          attribution: '&copy; OpenStreetMap contributors'
+      }}).addTo(geoMap);
 
-room_key = auth["room_id"]
-if room_key in APP_REGISTRY:
-    APP_REGISTRY[room_key]["last_active"] = datetime.now(TIMEZONE)
-else:
-    APP_REGISTRY[room_key] = {
-        "password": auth["password"],
-        "last_active": datetime.now(TIMEZONE),
-        "data_store": {},
-        "locations": {},
-        "levelling_positions": [],
-        "tracking_logs": [],
-        "chat_logs": []
-    }
+      window.geoadjustMarkers = {{}};
+      window.geoadjustPaths = {{}};
 
-room_data = APP_REGISTRY[room_key]
+      window.updateMarkers = function(users) {{
+          var seen = {{}};
+          users.forEach(function(u) {{
+              seen[u.id] = true;
+              var latlng = [u.lat, u.lon];
+              var icon = L.icon({{
+                  iconUrl: u.icon_url,
+                  shadowUrl: "{MARKER_SHADOW}",
+                  iconSize: [25, 41],
+                  iconAnchor: [12, 41],
+                  popupAnchor: [1, -34],
+                  shadowSize: [41, 41],
+              }});
+              if (window.geoadjustMarkers[u.id]) {{
+                  window.geoadjustMarkers[u.id].setLatLng(latlng);
+                  window.geoadjustMarkers[u.id].setIcon(icon);
+                  window.geoadjustMarkers[u.id].setPopupContent(u.popup);
+                  window.geoadjustMarkers[u.id].setTooltipContent(u.tooltip);
+              }} else {{
+                  window.geoadjustMarkers[u.id] = L.marker(latlng, {{icon: icon}})
+                      .addTo(geoMap)
+                      .bindPopup(u.popup)
+                      .bindTooltip(u.tooltip);
+              }}
 
-st.markdown("<h1 class='main-title'>🌐 GEOADJUST</h1>", unsafe_allow_html=True)
-st.markdown("<p class='sub-title'>Geodetic Network Adjustment & Spatial Toolkit</p>", unsafe_allow_html=True)
+              if (u.path && u.path.length > 1) {{
+                  if (window.geoadjustPaths[u.id]) {{
+                      window.geoadjustPaths[u.id].setLatLngs(u.path);
+                      window.geoadjustPaths[u.id].setStyle({{color: u.path_color}});
+                  }} else {{
+                      window.geoadjustPaths[u.id] = L.polyline(u.path, {{
+                          color: u.path_color, weight: 3, opacity: 0.7
+                      }}).addTo(geoMap);
+                  }}
+              }} else if (window.geoadjustPaths[u.id]) {{
+                  geoMap.removeLayer(window.geoadjustPaths[id]);
+                  delete window.geoadjustPaths[u.id];
+              }}
+          }});
+          Object.keys(window.geoadjustMarkers).forEach(function(id) {{
+              if (!seen[id]) {{
+                  geoMap.removeLayer(window.geoadjustMarkers[id]);
+                  delete window.geoadjustMarkers[id];
+                  if (window.geoadjustPaths[id]) {{
+                      geoMap.removeLayer(window.geoadjustPaths[id]);
+                      delete window.geoadjustPaths[id];
+                  }}
+              }}
+          }});
+      }};
 
-col_greet1, col_greet2 = st.columns([4, 1])
-with col_greet1:
-    st.markdown(
-        f"""<div class="user-banner">
-            <span>👋 Welcome, <b>{auth['username']}</b>!</span>
-            <span>🏠 Room ID: <b>{auth['room_id']}</b></span>
-        </div>""",
-        unsafe_allow_html=True
-    )
-with col_greet2:
-    if st.button("🚪 Log Out", use_container_width=True):
-        auth["logged_in"] = False
-        st.rerun()
+      window.addEventListener('message', function(event) {{
+          if (event.data && event.data.type === 'geoadjust_update' && event.data.room === "{room_id}") {{
+              window.updateMarkers(event.data.users);
+          }}
+      }});
+    </script>
+    """
+
+
+def build_updater_html(room_id, users_payload):
+    payload_json = json.dumps(users_payload)
+    return f"""
+    <script>
+    (function() {{
+        var payload = {payload_json};
+        try {{
+            var frames = window.parent.document.querySelectorAll('iframe');
+            for (var i = 0; i < frames.length; i++) {{
+                try {{
+                    var doc = frames[i].contentDocument || frames[i].contentWindow.document;
+                    var anchor = doc.getElementById('geoadjust-map-anchor');
+                    if (anchor && anchor.getAttribute('data-room') === "{room_id}") {{
+                        frames[i].contentWindow.postMessage(
+                            {{type: 'geoadjust_update', room: "{room_id}", users: payload}}, '*'
+                        );
+                        break;
+                    }}
+                }} catch (inner) {{ }}
+            }}
+        }} catch (e) {{ }}
+    }})();
+    </script>
+    """
+
+
+def build_wakelock_html():
+    return """
+    <script>
+    (function() {
+        async function requestWakeLock() {
+            try {
+                if ('wakeLock' in navigator) {
+                    window.geoadjustWakeLock = await navigator.wakeLock.request('screen');
+                }
+            } catch (e) { }
+        }
+        requestWakeLock();
+        document.addEventListener('visibilitychange', function() {
+            if (document.visibilityState === 'visible') {
+                requestWakeLock();
+            }
+        });
+    })();
+    </script>
+    """
+
+
+def render_single_point_downloads(df_res, filename_prefix="Single_Point_Result"):
+    """Helper function to render Excel and CSV download buttons for Single Point results."""
+    excel_buf = io.BytesIO()
+    with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
+        df_res.to_excel(writer, sheet_name="Result", index=False)
+        
+    st.markdown("---")
+    st.subheader("📥 Download Output Result")
+    d_col1, d_col2 = st.columns(2)
+    with d_col1:
+        st.download_button(
+            label="📄 Download CSV",
+            data=df_res.to_csv(index=False).encode("utf-8"),
+            file_name=f"{filename_prefix}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+    with d_col2:
+        st.download_button(
+            label="📊 Download Excel (.xlsx)",
+            data=excel_buf.getvalue(),
+            file_name=f"{filename_prefix}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
 
 # --- 2. Main Navigation Tabs ---
 tab1, tab2, tab3, tab4 = st.tabs([
@@ -216,247 +561,57 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 # =========================================================
-# TAB 1: 1D NETWORK ADJUSTMENT WITH AUTO-POSITIONING & DOWNLOADS
+# TAB 1: 1D NETWORK ADJUSTMENT
 # =========================================================
 with tab1:
     st.header("📏 1D Leveling Network Adjustment")
 
-    input_method = st.radio(
-        "Select Data Input Method:",
-        ["📁 Upload CSV / Excel File", "✍️ Step-by-Step Manual Key-in Wizard"],
-        horizontal=True,
-        key="1d_input_method"
-    )
+    col_cfg1, col_cfg2 = st.columns(2)
+    with col_cfg1:
+        bm_name = st.text_input("Fixed Benchmark Station Name", value="BMFGHT", key="1d_bm_name")
+        has_header = st.checkbox("File contains a header row", value=False, key="1d_header")
+    with col_cfg2:
+        bm_height = st.number_input("Benchmark Height (m)", value=100.0000, step=0.0001, format="%.4f", key="1d_bm_height")
+        custom_filename = st.text_input("Output Filename Base", value="1D_Adjustment_Results", key="1d_out_name")
 
-    st.markdown("---")
-    df_input = None
+    uploaded_file = st.file_uploader("Upload Leveling File (.csv or .xlsx)", type=["csv", "xlsx"], key="1d_file_uploader")
 
-    if input_method == "📁 Upload CSV / Excel File":
-        col_cfg1, col_cfg2 = st.columns(2)
-        with col_cfg1:
-            bm_name = st.text_input("Fixed Benchmark Station Name", value="BM1", key="1d_bm_name_upl")
-            has_header = st.checkbox("File contains a header row", value=True, key="1d_header")
-        with col_cfg2:
-            bm_height = st.number_input("Benchmark Known RL (m)", value=100.0000, step=0.0001, format="%.4f", key="1d_bm_height_upl")
-            custom_filename = st.text_input("Output Filename Base", value="1D_Adjustment_Report", key="1d_out_name_upl")
+    if uploaded_file is not None:
+        try:
+            if uploaded_file.name.endswith(".csv"):
+                df_input = pd.read_csv(uploaded_file, header=0 if has_header else None)
+            else:
+                df_input = pd.read_excel(uploaded_file, header=0 if has_header else None)
 
-        uploaded_file = st.file_uploader("Upload Leveling File (.csv or .xlsx)", type=["csv", "xlsx"], key="1d_file_uploader")
+            expected_cols = ["From Station", "To Station", "Diff. Height(m)", "Distance(m)", "StdDev_mm"]
+            if not has_header or len(df_input.columns) < 3:
+                rename_map = {i: expected_cols[i] for i in range(min(len(df_input.columns), 5))}
+                df_input = df_input.rename(columns=rename_map)
 
-        if uploaded_file is not None:
-            try:
-                if uploaded_file.name.endswith(".csv"):
-                    df_input = pd.read_csv(uploaded_file, header=0 if has_header else None)
-                else:
-                    df_input = pd.read_excel(uploaded_file, header=0 if has_header else None)
+            st.subheader("📋 Input Data Preview")
+            st.dataframe(df_input.head(10), use_container_width=True)
 
-                expected_cols = ["From", "To", "Backsight (m)", "Foresight (m)", "Distance (m)"]
-                if not has_header or len(df_input.columns) < 3:
-                    rename_map = {i: expected_cols[i] for i in range(min(len(df_input.columns), 5))}
-                    df_input = df_input.rename(columns=rename_map)
-
-                st.subheader("📋 Input Data Preview")
-                st.dataframe(df_input.head(10), use_container_width=True)
-
-            except Exception as e:
-                st.error(f"Data loading error: {e}")
-
-    else:
-        if "wizard_step" not in st.session_state:
-            st.session_state["wizard_step"] = 1
-        if "manual_records" not in st.session_state:
-            st.session_state["manual_records"] = []
-        if "proj_meta" not in st.session_state:
-            st.session_state["proj_meta"] = {
-                "name": "Jalan Contoh 2026",
-                "date": datetime.now().date(),
-                "instrument": "Leica NA320",
-                "observer": auth["username"],
-                "bm_name": "BM1",
-                "bm_height": 100.0000
-            }
-
-        step = st.session_state["wizard_step"]
-        st.markdown(f"### 🧙‍♂️ Wizard Step {step} of 3")
-
-        if step == 1:
-            st.subheader("Step 1: Project Information & Benchmark Setup")
-            meta = st.session_state["proj_meta"]
-            
-            p_name = st.text_input("Project Name", value=meta["name"], key="w_pname")
-            p_date = st.date_input("Date", value=meta["date"], key="w_pdate")
-            p_inst = st.text_input("Name of Instrument", value=meta["instrument"], key="w_pinst")
-            p_obs = st.text_input("Observer", value=meta["observer"], key="w_pobs")
-            
-            col_b1, col_b2 = st.columns(2)
-            with col_b1:
-                p_bm_name = st.text_input("Fixed Benchmark Station Name", value=meta["bm_name"], key="w_bm_name")
-            with col_b2:
-                p_bm_height = st.number_input("Benchmark Known RL (m)", value=meta["bm_height"], format="%.4f", key="w_bm_height")
-
-            if st.button("Next ➔ Enter Observations", type="primary", use_container_width=True):
-                st.session_state["proj_meta"] = {
-                    "name": p_name, "date": p_date, "instrument": p_inst,
-                    "observer": p_obs, "bm_name": p_bm_name, "bm_height": p_bm_height
-                }
-                st.session_state["wizard_step"] = 2
-                st.rerun()
-
-        elif step == 2:
-            st.subheader("Step 2: Enter Backsight (BS) & Foresight (FS) Observations")
-            meta = st.session_state["proj_meta"]
-            st.info(f"Project: **{meta['name']}** | Benchmark: **{meta['bm_name']} ({meta['bm_height']:.4f} m)**")
-
-            # --- Auto-Take Positioning Option for 1D Levelling ---
-            st.markdown("#### 📍 Auto GPS Positioning for Levelling Station")
-            auto_gps_enabled = st.checkbox("Enable Auto-Take GPS Positioning for current observation", value=True, key="auto_gps_1d_toggle")
-            show_gps_details = st.checkbox("👁️ View Captured GPS Coordinates", value=True, key="show_gps_1d_toggle")
-
-            current_gps_lat, current_gps_lon, current_gps_alt = None, None, 0.0
-            if auto_gps_enabled:
-                loc_1d = get_geolocation(component_key=f"geo_1d_{datetime.now().second}")
-                if loc_1d and "coords" in loc_1d:
-                    current_gps_lat = loc_1d["coords"].get("latitude")
-                    current_gps_lon = loc_1d["coords"].get("longitude")
-                    current_gps_alt = loc_1d["coords"].get("altitude") or 0.0
-                    if show_gps_details:
-                        st.success(f"🛰️ GPS Position Acquired: Lat: `{current_gps_lat:.6f}`, Lon: `{current_gps_lon:.6f}`, Alt: `{current_gps_alt:.2f}m`")
-
-            with st.form("obs_form", clear_on_submit=True):
-                col_o1, col_o2 = st.columns(2)
-                with col_o1:
-                    from_stn = st.text_input("From Station (e.g. BM1 or P1)", value=meta["bm_name"])
-                    bs_val = st.number_input("Backsight (BS) value (m)", value=1.523, format="%.4f")
-                with col_o2:
-                    to_stn = st.text_input("To Station (e.g. P1 or P2)", value="P1")
-                    fs_val = st.number_input("Foresight (FS) value (m)", value=0.612, format="%.4f")
-                
-                dist_val = st.number_input("Distance (m) [Optional]", value=120.5, format="%.2f")
-
-                submitted = st.form_submit_button("➕ Add Observation Record", use_container_width=True)
-                if submitted:
-                    now_str = datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
-                    record_entry = {
-                        "From": from_stn.strip(),
-                        "To": to_stn.strip(),
-                        "Backsight (m)": bs_val,
-                        "Foresight (m)": fs_val,
-                        "Distance (m)": dist_val,
-                        "Observer": auth["username"],
-                        "Timestamp": now_str
-                    }
-                    if current_gps_lat and current_gps_lon:
-                        record_entry["Latitude"] = current_gps_lat
-                        record_entry["Longitude"] = current_gps_lon
-                        record_entry["Altitude"] = current_gps_alt
-                        
-                        # Push to room levelling positions & tracking log
-                        room_data["levelling_positions"].append({
-                            "station": to_stn.strip(),
-                            "lat": current_gps_lat,
-                            "lon": current_gps_lon,
-                            "altitude": current_gps_alt,
-                            "observer": auth["username"],
-                            "timestamp": now_str
-                        })
-                        room_data["tracking_logs"].append({
-                            "timestamp": now_str,
-                            "username": auth["username"],
-                            "latitude": current_gps_lat,
-                            "longitude": current_gps_lon,
-                            "altitude": current_gps_alt,
-                            "source": f"1D Levelling Station ({to_stn.strip()})"
-                        })
-
-                    st.session_state["manual_records"].append(record_entry)
-                    st.success(f"Added observation from {from_stn} to {to_stn} successfully!")
-
-            if st.session_state["manual_records"]:
-                st.markdown("#### 📑 Collected Field Observations So Far:")
-                df_collected = pd.DataFrame(st.session_state["manual_records"])
-                st.dataframe(df_collected, use_container_width=True, hide_index=True)
-
-                if st.button("🗑️ Clear All Records", use_container_width=True):
-                    st.session_state["manual_records"] = []
-                    st.rerun()
-
-            col_nav1, col_nav2 = st.columns(2)
-            with col_nav1:
-                if st.button("⬅️ Back to Project Info", use_container_width=True):
-                    st.session_state["wizard_step"] = 1
-                    st.rerun()
-            with col_nav2:
-                if st.button("Next ➔ Review & Compute", type="primary", use_container_width=True):
-                    if not st.session_state["manual_records"]:
-                        st.warning("Please add at least one observation record before proceeding.")
-                    else:
-                        st.session_state["wizard_step"] = 3
-                        st.rerun()
-
-        elif step == 3:
-            st.subheader("Step 3: Review Collected Data & Compute Adjustment")
-            meta = st.session_state["proj_meta"]
-            
-            st.markdown(f"**Project Name:** {meta['name']} | **Date:** {meta['date']} | **Instrument:** {meta['instrument']} | **Observer:** {meta['observer']}")
-            st.markdown(f"**Benchmark:** {meta['bm_name']} ({meta['bm_height']:.4f} m)")
-
-            df_input = pd.DataFrame(st.session_state["manual_records"])
-            st.markdown("#### 📊 Final Review of Input Data")
-            st.dataframe(df_input, use_container_width=True, hide_index=True)
-
-            col_w_back, col_w_comp = st.columns(2)
-            with col_w_back:
-                if st.button("⬅️ Back to Add Observations", use_container_width=True):
-                    st.session_state["wizard_step"] = 2
-                    st.rerun()
-            with col_w_comp:
-                if st.button("🚀 Run 1D Adjustment", type="primary", use_container_width=True):
-                    try:
-                        res = adjust_1d_network(df_input, meta["bm_name"], meta["bm_height"])
-                        st.session_state["results_1d"] = res
-                        st.session_state["custom_filename_1d"] = f"1D_Report_{meta['name'].replace(' ', '_')}"
-                        room_data["data_store"]["results_1d"] = res
-                        st.success("Adjustment Complete!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Adjustment error: {e}")
-
-    if input_method == "📁 Upload CSV / Excel File" and df_input is not None:
-        bm_name = st.session_state.get("1d_bm_name_upl", "BM1")
-        bm_height = st.session_state.get("1d_bm_height_upl", 100.0)
-        custom_filename = st.session_state.get("1d_out_name_upl", "1D_Adjustment_Report")
-
-        if st.button("🚀 Run 1D Adjustment", type="primary", use_container_width=True):
-            with st.spinner("Computing Least Squares Adjustment..."):
-                try:
-                    res = adjust_1d_network(df_input, bm_name, bm_height)
-                    st.session_state["results_1d"] = res
-                    st.session_state["custom_filename_1d"] = custom_filename
-                    room_data["data_store"]["results_1d"] = res
+            if st.button("🚀 Run 1D Adjustment", type="primary", use_container_width=True):
+                with st.spinner("Computing Least Squares..."):
+                    st.session_state["results_1d"] = adjust_1d_network(df_input, bm_name, bm_height)
                     st.success("Adjustment Complete!")
-                except Exception as e:
-                    st.error(f"Adjustment error: {e}")
 
-    if "results_1d" not in st.session_state and "results_1d" in room_data["data_store"]:
-        st.session_state["results_1d"] = room_data["data_store"]["results_1d"]
+        except Exception as e:
+            st.error(f"Data loading error: {e}")
 
     if "results_1d" in st.session_state:
         res = st.session_state["results_1d"]
-        meta = st.session_state.get("proj_meta", {
-            "name": "Jalan Contoh 2026", "date": datetime.now().date(),
-            "instrument": "Leica NA320", "observer": auth["username"]
-        })
-
         st.markdown("---")
         st.subheader("📊 Adjustment Summary Statistics")
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Ref Variance (σ₀²)", f"{res['sigma0_sq']:.6f}")
         m2.metric("Ref Std Dev (σ₀)", f"{res['sigma0']:.5f}")
         m3.metric("Degrees of Freedom", res["dof"])
-        m4.metric("Chi-Square Test", res["chi2_status"])
+        m4.metric("Sum VᵀPV", f"{res['vTpv']:.5f}")
 
         col_tbl1, col_tbl2 = st.columns(2)
         with col_tbl1:
-            st.subheader("📍 Adjusted Reduced Levels (RL)")
+            st.subheader("📍 Adjusted Station Heights")
             st.dataframe(res["stations"], use_container_width=True, hide_index=True)
 
         with col_tbl2:
@@ -464,113 +619,18 @@ with tab1:
             st.dataframe(res["residuals"], use_container_width=True, hide_index=True)
 
         st.markdown("---")
-        st.subheader("📥 Download 1D Levelling Reports")
-
-        # CSV Export of Adjusted Stations
-        csv_stations = res["stations"].to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📄 Download Adjusted Levels as CSV",
-            data=csv_stations,
-            file_name="1D_Adjusted_Stations.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-
-        # PDF Report Generation
-        from reportlab.lib.pagesizes import letter
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib import colors
-
-        def generate_pdf_report(res_data, project_meta):
-            pdf_buffer = io.BytesIO()
-            doc = SimpleDocTemplate(pdf_buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
-            story = []
-            styles = getSampleStyleSheet()
-
-            title_style = ParagraphStyle(
-                'ReportTitle', parent=styles['Heading1'], fontSize=18,
-                textColor=colors.HexColor('#1E88E5'), alignment=1, spaceAfter=4
-            )
-            subtitle_style = ParagraphStyle(
-                'ReportSubtitle', parent=styles['Normal'], fontSize=9,
-                textColor=colors.HexColor('#555555'), alignment=1, spaceAfter=12
-            )
-
-            story.append(Paragraph("GEOADJUST — 1D Levelling Adjustment Report", title_style))
-            story.append(Paragraph("Geodetic Network Least Squares Adjustment System", subtitle_style))
-            story.append(Spacer(1, 8))
-
-            meta_data = [
-                [Paragraph("<b>Project Name:</b>", styles['Normal']), Paragraph(str(project_meta.get('name', '-')), styles['Normal']),
-                 Paragraph("<b>Date:</b>", styles['Normal']), Paragraph(str(project_meta.get('date', '-')), styles['Normal'])],
-                [Paragraph("<b>Instrument:</b>", styles['Normal']), Paragraph(str(project_meta.get('instrument', '-')), styles['Normal']),
-                 Paragraph("<b>Observer:</b>", styles['Normal']), Paragraph(str(project_meta.get('observer', '-')), styles['Normal'])]
-            ]
-            t_meta = Table(meta_data, colWidths=[90, 180, 70, 200])
-            t_meta.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F8F9FA')),
-                ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#DCDCDC')),
-                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-                ('PADDING', (0,0), (-1,-1), 5),
-                ('FONTSIZE', (0,0), (-1,-1), 9),
-            ]))
-            story.append(t_meta)
-            story.append(Spacer(1, 12))
-
-            story.append(Paragraph("<b>Adjustment Summary Statistics</b>", styles['Heading2']))
-            stat_data = [
-                ["Degrees of Freedom (f):", str(res_data['dof']), "A Posteriori Std. Dev. (σ₀):", f"{res_data['sigma0']:.4f}"],
-                ["Sum of Squares (Σv²):", f"{res_data['vTpv']:.4f} m²", "Chi-Square Test:", str(res_data['chi2_status'])]
-            ]
-            t_stat = Table(stat_data, colWidths=[140, 130, 140, 130])
-            t_stat.setStyle(TableStyle([
-                ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#DCDCDC')),
-                ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#FAFAFA')),
-                ('PADDING', (0,0), (-1,-1), 5),
-                ('FONTSIZE', (0,0), (-1,-1), 9),
-            ]))
-            story.append(t_stat)
-            story.append(Spacer(1, 12))
-
-            story.append(Paragraph("<b>Adjusted Reduced Levels (RL)</b>", styles['Heading2']))
-            stn_df = res_data['stations']
-            stn_table_data = [list(stn_df.columns)] + stn_df.values.tolist()
-            t_stn = Table(stn_table_data, colWidths=[140, 140, 140, 120])
-            t_stn.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E88E5')),
-                ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
-                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-                ('BOTTOMPADDING', (0,0), (-1,0), 5),
-                ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#DCDCDC')),
-                ('FONTSIZE', (0,0), (-1,-1), 9),
-                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F9F9F9')])
-            ]))
-            story.append(t_stn)
-
-            def add_header_footer(canvas, document):
-                canvas.saveState()
-                canvas.setFont('Helvetica', 8)
-                canvas.setFillColor(colors.HexColor('#777777'))
-                canvas.drawString(36, 20, "GEOADJUST Geodetic Network Adjustment Toolkit")
-                canvas.drawRightString(576, 20, f"Page {document.page}")
-                canvas.restoreState()
-
-            doc.build(story, onFirstPage=add_header_footer, onLaterPages=add_header_footer)
-            return pdf_buffer.getvalue()
-
-        pdf_bytes = generate_pdf_report(res, meta)
-        out_filename = st.session_state.get("custom_filename_1d", "1D_Adjustment_Report")
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+            res["stations"].to_excel(writer, sheet_name="Adjusted Heights", index=False)
+            res["residuals"].to_excel(writer, sheet_name="Residuals", index=False)
 
         st.download_button(
-            label="📄 Download Official PDF Report",
-            data=pdf_bytes,
-            file_name=f"{out_filename}.pdf",
-            mime="application/pdf",
+            label="📥 Save & Download Excel Output (.xlsx)",
+            data=excel_buffer.getvalue(),
+            file_name=f"{custom_filename}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
-
 
 # =========================================================
 # TAB 2: 3D GNSS NETWORK ADJUSTMENT
@@ -610,16 +670,11 @@ with tab2:
             if st.button("🚀 Run 3D Adjustment", type="primary", use_container_width=True, key="btn_run_3d"):
                 with st.spinner("Computing 3D Least Squares..."):
                     Ta_coords = [const_x, const_y, const_z]
-                    res3d = adjust_3d_network(df_input_3d, const_name=stn_const_name, Ta=Ta_coords, jns=1)
-                    st.session_state["results_3d"] = res3d
-                    room_data["data_store"]["results_3d"] = res3d
+                    st.session_state["results_3d"] = adjust_3d_network(df_input_3d, const_name=stn_const_name, Ta=Ta_coords, jns=1)
                     st.success("3D Network Adjustment Complete!")
 
         except Exception as e:
             st.error(f"Data loading error: {e}")
-
-    if "results_3d" not in st.session_state and "results_3d" in room_data["data_store"]:
-        st.session_state["results_3d"] = room_data["data_store"]["results_3d"]
 
     if "results_3d" in st.session_state:
         res3d = st.session_state["results_3d"]
@@ -631,251 +686,862 @@ with tab2:
         m3.metric("Degrees of Freedom", res3d["dof"])
         m4.metric("Sum VᵀPV", f"{res3d['vTpv']:.5f}")
 
+        excel_buffer_3d = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer_3d, engine="openpyxl") as writer:
+            res3d["stations"].to_excel(writer, sheet_name="Adjusted Coordinates", index=False)
+            res3d["residuals"].to_excel(writer, sheet_name="Residuals", index=False)
+
+        st.download_button(
+            label="📥 Save & Download 3D Excel Output (.xlsx)",
+            data=excel_buffer_3d.getvalue(),
+            file_name=f"{custom_filename_3d}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
 
 # =========================================================
-# TAB 3: REAL-TIME TRACKING & DOWNLOADS (TIME, LOCATION, ALTITUDE, CHAT)
+# TAB 3: REAL-TIME TRACKING
 # =========================================================
 with tab3:
-    st.header("📍 Real-Time Tracking & Room Collaboration")
-    st.info(f"Active Room Session: `{auth['room_id']}` | Logged in as: `{auth['username']}`")
-    st.caption("All users sharing the same Room ID and Password are interconnected and can monitor live positions, altitude, and exchange team notes.")
-
-    # Auto-refresh every 10 seconds to fetch live locations
-    refresh_count = st_autorefresh(interval=10000, key="tracking_autorefresh_t3")
-
-    # Get current user geolocation
-    loc = get_geolocation(component_key=f"geo_t3_{refresh_count}")
-    now_ts = datetime.now(TIMEZONE)
-
-    if loc and "coords" in loc:
-        coords = loc["coords"]
-        lat = coords.get("latitude")
-        lon = coords.get("longitude")
-        alt = coords.get("altitude") or 0.0
-        acc = coords.get("accuracy") or 0.0
-        timestamp_str = now_ts.strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Store user location
-        room_data["locations"][auth["username"]] = {
-            "latitude": lat,
-            "longitude": lon,
-            "altitude_m": alt,
-            "accuracy_m": acc,
-            "updated_at": timestamp_str
+    if "user_room_session" not in st.session_state:
+        st.session_state["user_room_session"] = {
+            "authenticated": False, "room_id": "", "room_pass": "", "username": "", "role": ""
         }
+    if "show_leave_confirm" not in st.session_state:
+        st.session_state["show_leave_confirm"] = False
+    if "map_center" not in st.session_state:
+        st.session_state["map_center"] = None
+    if "map_zoom" not in st.session_state:
+        st.session_state["map_zoom"] = 16
+    if "_map_base_room" not in st.session_state:
+        st.session_state["_map_base_room"] = None
 
-        # Log entry for tracking export
-        room_data["tracking_logs"].append({
-            "timestamp": timestamp_str,
-            "username": auth["username"],
-            "latitude": lat,
-            "longitude": lon,
-            "altitude": alt,
-            "source": "GPS Live Stream"
-        })
+    session = st.session_state["user_room_session"]
 
-    col_map, col_info = st.columns([2, 1])
+    if not session["authenticated"]:
+        st.markdown("<br>", unsafe_allow_html=True)
+        login_col1, login_col2, login_col3 = st.columns([1, 2, 1])
 
-    with col_info:
-        st.subheader("👥 Room Members & Stations")
-        active_locations = room_data.get("locations", {})
-        if active_locations:
-            df_locs = pd.DataFrame([
-                {"User": u, "Lat": d["latitude"], "Lon": d["longitude"], "Alt (m)": d["altitude_m"], "Updated": d["updated_at"]}
-                for u, d in active_locations.items()
-            ])
-            st.dataframe(df_locs, use_container_width=True, hide_index=True)
+        with login_col2:
+            st.markdown(
+                """
+                <div style="background-color: #ffffff; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); text-align: center;">
+                    <h2 style="color: #1E88E5; margin-bottom: 0px;">📍 GEOADJUST Tracking</h2>
+                    <p style="color: #666; font-size: 0.95rem; margin-bottom: 20px;">Cross-Device Real-Time Location Sharing & Unified Chat</p>
+                </div>
+            """,
+                unsafe_allow_html=True,
+            )
+
+            with st.form("room_login_form"):
+                input_user = st.text_input("👤 Username", value="User_1")
+                input_room = st.text_input("🏠 Room ID", value="DemoRoom")
+                input_pass = st.text_input("🔑 Password", type="password", value="123456")
+                input_role = st.selectbox("🎯 Role", ["Field Surveyor", "🏢 Control Center (Office)"])
+
+                submit_login = st.form_submit_button("🚀 Enter Room", use_container_width=True, type="primary")
+
+                if submit_login:
+                    if not input_user or not input_room or not input_pass:
+                        st.error("Please fill in Username, Room ID, and Password.")
+                    else:
+                        room_key = input_room.strip()
+                        user_clean = input_user.strip()
+
+                        if room_key in GLOBAL_ROOMS_REGISTRY and is_room_stale(GLOBAL_ROOMS_REGISTRY[room_key]):
+                            purge_room(GLOBAL_ROOMS_REGISTRY, room_key)
+
+                        if room_key in GLOBAL_ROOMS_REGISTRY:
+                            room_data = GLOBAL_ROOMS_REGISTRY[room_key]
+                            if room_data["password"] != input_pass:
+                                st.error("Incorrect Password for this active room!")
+                                st.stop()
+
+                            existing_member = room_data["members"].get(user_clean)
+                            if existing_member:
+                                existing_member["time_out"] = None
+                                log_event(room_data, room_key, user_clean, "REJOIN")
+                            else:
+                                color_idx = len(room_data["members"]) % len(COLOR_PALETTE)
+                                room_data["members"][user_clean] = {
+                                    "role": input_role,
+                                    "color": COLOR_PALETTE[color_idx],
+                                    "time_in": now_local(),
+                                    "time_out": None,
+                                    "last_heartbeat": now_local(),
+                                }
+                                log_event(room_data, room_key, user_clean, "JOIN")
+                        else:
+                            GLOBAL_ROOMS_REGISTRY[room_key] = {
+                                "password": input_pass,
+                                "members": {
+                                    user_clean: {
+                                        "role": input_role,
+                                        "color": COLOR_PALETTE[0],
+                                        "time_in": now_local(),
+                                        "time_out": None,
+                                        "last_heartbeat": now_local(),
+                                    }
+                                },
+                                "locations": {},
+                                "unified_log": [],
+                            }
+                            log_event(GLOBAL_ROOMS_REGISTRY[room_key], room_key, user_clean, "JOIN")
+
+                        session["authenticated"] = True
+                        session["username"] = user_clean
+                        session["room_id"] = room_key
+                        session["room_pass"] = input_pass
+                        session["role"] = input_role
+                        st.session_state["map_center"] = None
+                        st.session_state["_map_base_room"] = None
+                        st.rerun()
+
+    else:
+        current_room = session["room_id"]
+        user_id = session["username"]
+        is_admin = "Control Center" in session["role"]
+        room_data = GLOBAL_ROOMS_REGISTRY.get(current_room)
+
+        if not room_data or user_id not in room_data.get("members", {}):
+            st.error("Room session expired or room closed. Please rejoin.")
+            session["authenticated"] = False
+            st.rerun()
+
+        refresh_count = st_autorefresh(interval=10000, key="tracking_autorefresh")
+
+        loc = get_geolocation(component_key=f"geo_{refresh_count}")
+        net_online = streamlit_js_eval(js_expressions="navigator.onLine", key=f"net_online_{refresh_count}")
+        net_type = streamlit_js_eval(js_expressions="navigator.connection ? navigator.connection.effectiveType : 'unknown'", key=f"net_type_{refresh_count}")
+
+        now_ts = now_local()
+        current_time_str = fmt_time(now_ts)
+        current_date_str = now_ts.strftime("%Y-%m-%d")
+
+        room_data["members"][user_id]["last_heartbeat"] = now_ts
+
+        if not st.session_state.get("_wakelock_requested"):
+            components.html(build_wakelock_html(), height=0)
+            st.session_state["_wakelock_requested"] = True
+
+        current_gps_quality = "🔴 No Fix"
+        if loc and "coords" in loc:
+            coords = loc["coords"]
+            lat = coords.get("latitude")
+            lon = coords.get("longitude")
+            alt = coords.get("altitude") if coords.get("altitude") is not None else 0.0
+            acc = coords.get("accuracy") if coords.get("accuracy") is not None else 0.0
+            current_gps_quality = gps_quality_label(acc)
+
+            user_color = room_data["members"][user_id]["color"]
+
+            tracks = room_data.setdefault("tracks", {})
+            track = tracks.setdefault(user_id, [])
+            track.append({"lat": lat, "lon": lon, "alt": alt, "ts": now_ts})
+            if len(track) > MAX_TRACK_POINTS:
+                del track[: len(track) - MAX_TRACK_POINTS]
+
+            room_data["locations"][user_id] = {
+                "user_id": user_id,
+                "latitude": lat,
+                "longitude": lon,
+                "altitude_m": alt,
+                "accuracy_m": acc,
+                "updated_at": current_time_str,
+                "last_seen": now_ts,
+                "color": user_color,
+            }
+
+            log_event(
+                room_data, current_room, user_id, "GPS_UPDATE",
+                extra={"Latitude": lat, "Longitude": lon, "Altitude_m": round(alt, 2), "Accuracy_m": round(acc, 2)},
+            )
         else:
-            st.info("Awaiting GPS location signal from users...")
+            st.sidebar.warning("⏳ Awaiting Browser GPS Permissions / Signal...")
 
-        st.markdown("#### 💬 Room Chat & Team Notes")
-        with st.form("chat_form", clear_on_submit=True):
-            chat_msg = st.text_input("Send message to room team:")
-            submitted_chat = st.form_submit_button("📤 Send", use_container_width=True)
-            if submitted_chat and chat_msg.strip():
-                chat_entry = {
-                    "timestamp": datetime.now(TIMEZONE).strftime("%H:%M:%S"),
-                    "sender": auth["username"],
-                    "message": chat_msg.strip()
-                }
-                room_data["chat_logs"].append(chat_entry)
-                st.success("Message sent!")
+        head_col1, head_col2 = st.columns([3, 1])
+        with head_col1:
+            st.subheader(f"📍 Room: `{current_room}`")
+            st.caption(f"Logged in as **{user_id}** ({'Control Center Admin' if is_admin else 'Field Surveyor'})")
+        with head_col2:
+            if st.button("🚪 Leave Room", use_container_width=True):
+                st.session_state["show_leave_confirm"] = True
+                st.rerun()
 
-        chat_history = room_data.get("chat_logs", [])
-        if chat_history:
-            for c in reversed(chat_history[-10:]):
-                st.markdown(f"<small><b>[{c['timestamp']}] {c['sender']}:</b> {c['message']}</small>", unsafe_allow_html=True)
+        if st.session_state["show_leave_confirm"]:
+            st.warning("⚠️ **Before you leave** — please download your logs if needed.")
+            dl_col, confirm_col, cancel_col = st.columns(3)
+            with dl_col:
+                if room_data["unified_log"]:
+                    st.download_button(
+                        "📥 Download Log (.xlsx)",
+                        data=build_full_log_workbook(room_data),
+                        file_name=f"Log_{current_room}_{today_str()}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+            with confirm_col:
+                if st.button("✅ Confirm Leave", type="primary", use_container_width=True):
+                    room_data["members"][user_id]["time_out"] = now_local()
+                    room_data["locations"].pop(user_id, None)
+                    log_event(room_data, current_room, user_id, "LEAVE")
 
-        # --- EXPORT TRACKING & CHAT LOGS ---
+                    if all(m.get("time_out") is not None for m in room_data["members"].values()):
+                        purge_room(GLOBAL_ROOMS_REGISTRY, current_room)
+
+                    session["authenticated"] = False
+                    st.session_state["show_leave_confirm"] = False
+                    st.rerun()
+            with cancel_col:
+                if st.button("❌ Cancel", use_container_width=True):
+                    st.session_state["show_leave_confirm"] = False
+                    st.rerun()
+            st.stop()
+
+        col_map, col_chat = st.columns([2, 1])
+
+        with col_map:
+            st.subheader("🗺️ Live OpenStreetMap")
+            show_path = st.checkbox("🛣️ Show movement path", value=True, key="show_path")
+
+            active_locs = {
+                uid: loc for uid, loc in room_data["locations"].items()
+                if room_data["members"].get(uid, {}).get("time_out") is None
+            }
+
+            if active_locs:
+                if st.session_state["map_center"] is None:
+                    first_loc = next(iter(active_locs.values()))
+                    st.session_state["map_center"] = [first_loc["latitude"], first_loc["longitude"]]
+
+                users_payload = []
+                for uid, u in active_locs.items():
+                    online = (now_ts - u["last_seen"]) <= timedelta(seconds=ONLINE_THRESHOLD_SEC)
+                    icon_color = u["color"] if online else "grey"
+                    icon_url, _ = marker_icon_urls(icon_color)
+                    popup_html = f"<b>User:</b> {u['user_id']}<br><b>Lat:</b> {u['latitude']:.5f}<br><b>Lon:</b> {u['longitude']:.5f}"
+                    path_points = []
+                    if show_path:
+                        track = room_data.get("tracks", {}).get(uid, [])
+                        path_points = [[p["lat"], p["lon"]] for p in track]
+
+                    users_payload.append({
+                        "id": uid, "lat": u["latitude"], "lon": u["longitude"],
+                        "icon_url": icon_url, "popup": popup_html, "tooltip": f"📍 {u['user_id']}",
+                        "path": path_points, "path_color": u["color"]
+                    })
+
+                if st.session_state.get("_map_base_room") != current_room:
+                    st.session_state["_map_base_html"] = build_base_map_html(
+                        st.session_state["map_center"], st.session_state["map_zoom"], current_room
+                    )
+                    st.session_state["_map_base_room"] = current_room
+
+                components.html(st.session_state["_map_base_html"], height=450)
+                components.html(build_updater_html(current_room, users_payload), height=0)
+
+                st.markdown("**Active Team Members**")
+                st.dataframe(build_members_table(room_data), use_container_width=True, hide_index=True)
+
+                st.markdown("---")
+                st.subheader("🎬 Path Playback & KML Export Settings")
+                
+                all_tracked_users = list(room_data.get("tracks", {}).keys())
+                playback_options = ["🌐 All Users (Combined)"] + all_tracked_users
+                
+                selected_playback_target = st.selectbox(
+                    "🎯 Choose User Path to View / Playback / Export:",
+                    options=playback_options,
+                    index=0,
+                    key="pb_target_select"
+                )
+
+                components.html(build_multi_playback_map_html(room_data, selected_playback_target), height=390)
+
+                kml_export_data = generate_kml_export(room_data, selected_playback_target)
+                target_filename = selected_playback_target.replace(" ", "_").replace("🌐_", "")
+                
+                st.download_button(
+                    label=f"🌐 Download KML Path for '{selected_playback_target}'",
+                    data=kml_export_data,
+                    file_name=f"Path_{current_room}_{target_filename}_{today_str()}.kml",
+                    mime="application/vnd.google-earth.kml+xml",
+                    use_container_width=True,
+                    key="dl_flexible_kml",
+                )
+
+            else:
+                st.info("No active team members sharing GPS coordinates in this room.")
+
+        with col_chat:
+            st.subheader("💬 Room Chat")
+            with st.form("send_chat_form", clear_on_submit=True):
+                chat_msg = st.text_input("Message:")
+                btn_send = st.form_submit_button("Send", use_container_width=True)
+
+                if btn_send and chat_msg.strip():
+                    log_event(room_data, current_room, user_id, "CHAT_MESSAGE", extra={"Chat_Message": chat_msg.strip()})
+                    st.rerun()
+
+            chat_events = [log for log in room_data["unified_log"] if log["Event_Type"] == "CHAT_MESSAGE"]
+            if chat_events:
+                chat_container = st.container(height=300)
+                with chat_container:
+                    for msg in reversed(chat_events):
+                        time_only = msg["Timestamp"].split(" ")[1]
+                        st.markdown(f"**{msg['User_ID']}** ({time_only}): {msg['Chat_Message']}")
+
         st.markdown("---")
-        st.subheader("📥 Export Tracking Data")
+        st.subheader("📜 Logging Data — Overall")
+        df_overall = build_log_dataframe(room_data)
+        if not df_overall.empty:
+            st.dataframe(df_overall.head(20), use_container_width=True, hide_index=True, height=280)
 
-        # CSV Export for Tracking Logs (Time, Location, Altitude)
-        tracking_logs = room_data.get("tracking_logs", [])
-        if tracking_logs:
-            df_tracks = pd.DataFrame(tracking_logs)
-            csv_tracks = df_tracks.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📊 Download Tracking Log (CSV)",
-                data=csv_tracks,
-                file_name=f"Tracking_Log_{auth['room_id']}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-
-        # TXT Export for Chat & Activity Logs
-        if chat_history or tracking_logs:
-            chat_export_str = f"=== GEOADJUST TRACKING & CHAT REPORT (ROOM: {auth['room_id']}) ===\n\n"
-            chat_export_str += "--- CHAT LOGS ---\n"
-            for c in chat_history:
-                chat_export_str += f"[{c['timestamp']}] {c['sender']}: {c['message']}\n"
-            chat_export_str += "\n--- POSITION LOGS ---\n"
-            for t in tracking_logs:
-                chat_export_str += f"[{t['timestamp']}] {t['username']} | Lat: {t['latitude']} | Lon: {t['longitude']} | Alt: {t.get('altitude', 0)}m\n"
-
-            st.download_button(
-                label="📝 Download Full Room Report (TXT)",
-                data=chat_export_str.encode('utf-8'),
-                file_name=f"Room_Activity_Report_{auth['room_id']}.txt",
-                mime="text/plain",
-                use_container_width=True
-            )
-
-    with col_map:
-        st.subheader("🗺️ Live Team Map")
-        center_lat = 3.1390
-        center_lon = 101.6869
-        if active_locations:
-            first_user = list(active_locations.values())[0]
-            center_lat = first_user["latitude"]
-            center_lon = first_user["longitude"]
-
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=13)
-
-        # Add user position markers
-        for idx, (usr, info) in enumerate(active_locations.items()):
-            folium.Marker(
-                [info["latitude"], info["longitude"]],
-                popup=f"<b>User:</b> {usr}<br><b>Alt:</b> {info['altitude_m']}m<br><b>Updated:</b> {info['updated_at']}",
-                tooltip=usr,
-                icon=folium.Icon(color="blue" if usr == auth["username"] else "orange", icon="user", prefix="fa")
-            ).add_to(m)
-
-        # Add 1D Levelling station auto-positions
-        lev_pos = room_data.get("levelling_positions", [])
-        for lev in lev_pos:
-            folium.CircleMarker(
-                location=[lev["lat"], lev["lon"]],
-                radius=8,
-                color="#43A047",
-                fill=True,
-                fill_color="#43A047",
-                popup=f"<b>Station:</b> {lev['station']}<br><b>Observer:</b> {lev['observer']}<br><b>Alt:</b> {lev.get('altitude', 0)}m<br><b>Time:</b> {lev['timestamp']}",
-                tooltip=f"Station: {lev['station']}"
-            ).add_to(m)
-
-        st_folium(m, width=700, height=450, key=f"folium_map_{refresh_count}")
-
+        st.download_button(
+            label="📥 Download Full Log (.xlsx)",
+            data=build_full_log_workbook(room_data),
+            file_name=f"Log_{current_room}_{today_str()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
 
 # =========================================================
-# TAB 4: DATUM TRANSFORMATION
+# TAB 4: DATUM TRANSFORMATION & MAP PROJECTION 
 # =========================================================
 with tab4:
     st.header("🧭 Geodetic Datum Transformation & Map Projection")
 
     mode = st.radio(
         "Select Operation Mode:",
-        ["3-Dimensional Transformation", "Map Projection", "Geodetic Tools (Conversion)"],
+        [
+            "3-Dimensional Transformation",
+            "Map Projection",
+            "Geodetic Tools (Conversion)",
+        ],
         horizontal=True,
         key="gdts_mode",
     )
+
     st.markdown("---")
 
+    # -----------------------------------------------------
+    # MODE 1: 3-Dimensional Datum Transformation
+    # -----------------------------------------------------
     if mode == "3-Dimensional Transformation":
         st.subheader("📐 3D Datum Transformation")
+        
         region = st.selectbox("Select Region / Zone:", ["Peninsular Malaysia", "Sabah and Sarawak"], key="trans_region")
-        modules = ["1. GDM2000 to PMSGN94", "2. PMSGN94 to GDM2000"] if region == "Peninsular Malaysia" else ["1. GDM2000 to EMSGN97", "2. EMSGN97 to GDM2000"]
+
+        if region == "Peninsular Malaysia":
+            modules = [
+                "1. GDM2000 to PMSGN94", 
+                "2. PMSGN94 to GDM2000",
+            ]
+        else:
+            modules = [
+                "1. GDM2000 to EMSGN97", 
+                "2. EMSGN97 to GDM2000",
+                "3. GDM2000 to BT68 for Sabah", 
+                "4. BT68 to GDM2000 for Sabah",
+                "5. EMSGN97 to BT68 for Sabah", 
+                "6. BT68 to EMSGN97 for Sabah",
+                "7. GDM2000 to BT68 for Sarawak", 
+                "8. BT68 to GDM2000 for Sarawak",
+                "9. EMSGN97 to BT68 for Sarawak", 
+                "10. BT68 to EMSGN97 for Sarawak",
+            ]
+
         selected_module = st.selectbox("Transformation Module:", modules, key="trans_module_sel")
         module_key = selected_module.split(". ", 1)[1]
         from_name, to_name = [x.strip() for x in module_key.split(" to ")]
 
-        col_in1, col_in2, col_in3 = st.columns(3)
-        with col_in1:
-            lat_in = st.number_input("Latitude (Decimal Degrees)", value=1.4833333, format="%.5f", key="trans_dd_lat")
-        with col_in2:
-            lon_in = st.number_input("Longitude (Decimal Degrees)", value=103.7500000, format="%.5f", key="trans_dd_lon")
-        with col_in3:
-            h_in = st.number_input("Ellipsoidal Height (m)", value=10.000, format="%.3f", key="trans_h_in")
-            stn_name = st.text_input("Station Name", value="STN01", key="trans_stn_name")
+        proc_type_3d = st.radio("Processing Type:", ["Single Point", "Batch File Processing"], horizontal=True, key="proc_type_3d")
 
-        if st.button("⚡ Transform Coordinates", type="primary", use_container_width=True, key="btn_transform"):
-            lat_out, lon_out, h_out = dt.bursa_wolf_transform(lat_in, lon_in, h_in, module_key)
-            st.success("Transformation Successful!")
-            df_res = pd.DataFrame([{
-                "Station": stn_name,
-                f"{from_name} Lat": f"{lat_in:.6f}°", f"{from_name} Lon": f"{lon_in:.6f}°",
-                f"{to_name} Lat": f"{lat_out:.6f}°", f"{to_name} Lon": f"{lon_out:.6f}°", f"{to_name} H (m)": f"{h_out:.3f}"
-            }])
-            st.dataframe(df_res, use_container_width=True, hide_index=True)
+        if proc_type_3d == "Single Point":
+            coord_fmt_3d = st.radio("Coordinate Input Format:", ["Deg / Min / Sec (DMS)", "Decimal Degrees (DD)"], horizontal=True, key="coord_fmt_3d")
+            
+            col_in1, col_in2, col_in3 = st.columns(3)
+            
+            if coord_fmt_3d == "Deg / Min / Sec (DMS)":
+                with col_in1:
+                    st.markdown("**Latitude**")
+                    d_lat = st.number_input("Deg", value=1, key="trans_d_lat")
+                    m_lat = st.number_input("Min", value=29, key="trans_m_lat")
+                    s_lat = st.number_input("Sec", value=0.0, format="%.4f", key="trans_s_lat")
+                with col_in2:
+                    st.markdown("**Longitude**")
+                    d_lon = st.number_input("Deg", value=103, key="trans_d_lon")
+                    m_lon = st.number_input("Min", value=45, key="trans_m_lon")
+                    s_lon = st.number_input("Sec", value=0.0, format="%.4f", key="trans_s_lon")
+            else:
+                with col_in1:
+                    lat_dd_in = st.number_input("Latitude (Decimal Degrees)", value=1.4833333, format="%.5f", key="trans_dd_lat")
+                with col_in2:
+                    lon_dd_in = st.number_input("Longitude (Decimal Degrees)", value=103.7500000, format="%.5f", key="trans_dd_lon")
 
+            with col_in3:
+                h_in = st.number_input("Ellipsoidal Height (m)", value=10.000, format="%.3f", key="trans_h_in")
+                stn_name = st.text_input("Station Name", value="STN01", key="trans_stn_name")
+
+            if st.button("⚡ Transform Coordinates", type="primary", use_container_width=True, key="btn_transform"):
+                if coord_fmt_3d == "Deg / Min / Sec (DMS)":
+                    lat_in = dt.dms_to_deg(d_lat, m_lat, s_lat)
+                    lon_in = dt.dms_to_deg(d_lon, m_lon, s_lon)
+                    from_lat_str = f"{d_lat}° {m_lat}' {s_lat:.5f}\""
+                    from_lon_str = f"{d_lon}° {m_lon}' {s_lon:.5f}\""
+                else:
+                    lat_in = lat_dd_in
+                    lon_in = lon_dd_in
+                    from_lat_str = f"{lat_in:.8f}°"
+                    from_lon_str = f"{lon_in:.8f}°"
+
+                lat_out, lon_out, h_out = dt.bursa_wolf_transform(lat_in, lon_in, h_in, module_key)
+                
+                if coord_fmt_3d == "Deg / Min / Sec (DMS)":
+                    out_d_lat, out_m_lat, out_s_lat = dt.deg_to_dms(lat_out)
+                    out_d_lon, out_m_lon, out_s_lon = dt.deg_to_dms(lon_out)
+                    to_lat_str = f"{out_d_lat}° {out_m_lat}' {out_s_lat:.5f}\""
+                    to_lon_str = f"{out_d_lon}° {out_m_lon}' {out_s_lon:.5f}\""
+                else:
+                    to_lat_str = f"{lat_out:.5f}°"
+                    to_lon_str = f"{lon_out:.5f}°"
+
+                st.success("Transformation Successful!")
+                st.markdown("### 📊 Transformed Output Results")
+                
+                df_res = pd.DataFrame([{
+                    "Station": stn_name,
+                    f"{from_name} Latitude": from_lat_str,
+                    f"{from_name} Longitude": from_lon_str,
+                    f"{from_name} Ell. Height (m)": f"{h_in:.3f}",
+                    f"{to_name} Latitude": to_lat_str,
+                    f"{to_name} Longitude": to_lon_str,
+                    f"{to_name} Ell. Height (m)": f"{h_out:.3f}"
+                }])
+                st.dataframe(df_res, use_container_width=True, hide_index=True)
+                render_single_point_downloads(df_res, filename_prefix=f"3D_Single_{from_name}_to_{to_name}")
+
+        else:
+            st.markdown("---")
+            st.subheader("📁 Batch 3D Transformation")
+            
+            c_b1, c_b2 = st.columns(2)
+            with c_b1:
+                batch_in_unit = st.radio("Input Format:", ["Decimal Degrees (DD)", "DMS String"], key="b3d_in_fmt")
+            with c_b2:
+                batch_out_unit = st.radio("Output Format:", ["Decimal Degrees (DD)", "DMS String"], key="b3d_out_fmt")
+
+            batch_file_3d = st.file_uploader("Upload Coordinate File (.csv or .xlsx)", type=["csv", "xlsx"], key="b3d_file")
+
+            if batch_file_3d is not None:
+                try:
+                    df_b3d = pd.read_csv(batch_file_3d) if batch_file_3d.name.endswith(".csv") else pd.read_excel(batch_file_3d)
+                    st.dataframe(df_b3d.head(5), use_container_width=True)
+
+                    cols = list(df_b3d.columns)
+                    c_lat, c_lon, c_h = st.columns(3)
+                    with c_lat:
+                        lat_col = st.selectbox("Latitude Column:", cols, index=0, key="b3d_lat_col")
+                    with c_lon:
+                        lon_col = st.selectbox("Longitude Column:", cols, index=min(1, len(cols) - 1), key="b3d_lon_col")
+                    with c_h:
+                        h_col = st.selectbox("Height Column (Optional):", ["None"] + cols, index=0, key="b3d_h_col")
+
+                    if st.button("🚀 Run Transformation", type="primary", use_container_width=True, key="btn_b3d_run"):
+                        df_out = df_b3d.copy()
+                        out_lats, out_lons, out_hs = [], [], []
+
+                        for _, row in df_b3d.iterrows():
+                            lat_deg = parse_coordinate_to_deg(row[lat_col])
+                            lon_deg = parse_coordinate_to_deg(row[lon_col])
+                            h_val = float(row[h_col]) if h_col != "None" and pd.notna(row[h_col]) else 0.0
+
+                            lat_out, lon_out, h_out = dt.bursa_wolf_transform(lat_deg, lon_deg, h_val, module_key)
+
+                            if "DMS" in batch_out_unit:
+                                out_lats.append(format_deg_to_dms_str(lat_out))
+                                out_lons.append(format_deg_to_dms_str(lon_out))
+                            else:
+                                out_lats.append(round(lat_out, 5))
+                                out_lons.append(round(lon_out, 5))
+                            out_hs.append(round(h_out, 3))
+
+                        df_out[f"{to_name} Latitude"] = out_lats
+                        df_out[f"{to_name} Longitude"] = out_lons
+                        if h_col != "None":
+                            df_out[f"{to_name} Ell. Height"] = out_hs
+
+                        st.success("Batch Transformation Complete!")
+                        st.dataframe(df_out.head(10), use_container_width=True)
+
+                        excel_buf = io.BytesIO()
+                        with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
+                            df_out.to_excel(writer, sheet_name="3D_Transformed", index=False)
+
+                        d_col1, d_col2 = st.columns(2)
+                        with d_col1:
+                            st.download_button("📥 Download CSV", data=df_out.to_csv(index=False).encode("utf-8"), file_name="3D_Batch_Results.csv", mime="text/csv", use_container_width=True)
+                        with d_col2:
+                            st.download_button("📥 Download Excel", data=excel_buf.getvalue(), file_name="3D_Batch_Results.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+
+                except Exception as e:
+                    st.error(f"Processing error: {e}")
+
+    # -----------------------------------------------------
+    # MODE 2: Map Projection
+    # -----------------------------------------------------
     elif mode == "Map Projection":
         st.subheader("🗺️ Map Projection System")
         proj_region = st.selectbox("Select Region:", ["Peninsular Malaysia", "Sabah and Sarawak"], key="proj_region")
-        proj_modules = ["1. GDM2000 to RSO Geocentric", "2. RSO Geocentric to GDM2000"]
-        sel_p_module = st.selectbox("Transformation Module:", proj_modules, key="proj_module_sel")
+
+        if proj_region == "Peninsular Malaysia":
+            proj_modules = [
+                "1. GDM2000 to RSO Geocentric",
+                "2. RSO Geocentric to GDM2000",
+                "3. GDM2000 to Cassini Geocentric",
+                "4. Cassini Geocentric to GDM2000",
+            ]
+            state_options = ["Johor", "Kedah & Perlis", "Kelantan", "N.Sembilan & Melaka", "Pahang", "Perak", "Pulau Pinang", "Selangor & Kuala Lumpur", "Terengganu"]
+        else:
+            proj_modules = [
+                "1. GDM2000 to RSO Geocentric",
+                "2. RSO Geocentric to GDM2000",
+                "3. BT68 to BRSO(Old)", 
+                "4. BRSO(Old) to BT68"
+            ]
+            state_options = ["Sabah", "Sarawak"]
+
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            sel_p_module = st.selectbox("Transformation Module:", proj_modules, key="proj_module_sel")
+        
         module_title = sel_p_module.split(". ", 1)[1]
         from_name, to_name = [x.strip() for x in module_title.split(" to ")]
+        
+        is_cassini = "Cassini" in module_title
+        is_rso = "RSO" in module_title or "BRSO" in module_title
 
-        col_i1, col_i2 = st.columns(2)
-        with col_i1:
-            p_dd_lat = st.number_input("Latitude (Decimal Degrees)", value=1.4833333, format="%.5f", key="p_dd_lat")
-        with col_i2:
-            p_dd_lon = st.number_input("Longitude (Decimal Degrees)", value=103.7500000, format="%.5f", key="p_dd_lon")
+        with col_p2:
+            if is_cassini:
+                selected_state = st.selectbox("State Selection:", state_options, key="proj_state_sel")
+            else:
+                st.selectbox("State Selection :", ["Not Applicable"], disabled=True, key="proj_state_disabled")
+                selected_state = None
 
-        if st.button("🚀 Calculate Map Projection", type="primary", use_container_width=True, key="btn_calc_proj"):
-            E, N = dt.latlon_to_rso(p_dd_lat, p_dd_lon)
-            st.success("Projection Complete!")
-            df_res = pd.DataFrame([{
-                "Station": "STN_PROJ_01",
-                f"{from_name} Lat": f"{p_dd_lat:.5f}°", f"{from_name} Lon": f"{p_dd_lon:.5f}°",
-                f"{to_name} Easting (m)": f"{E:.3f}", f"{to_name} Northing (m)": f"{N:.3f}"
-            }])
-            st.dataframe(df_res, use_container_width=True, hide_index=True)
+# Set default parameters in background without UI controls
+        if is_rso:
+            default_rso_preset = "Peninsular Malaysia Geocentric RSO" if proj_region == "Peninsular Malaysia" else "East Malaysia Geocentric RSO"
+            if "BRSO" in module_title:
+                default_rso_preset = "BRSO Old (East Malaysia)"
 
+            rso_params_dict = dt.RSO_PARAMS[default_rso_preset]
+            selected_rso_params = None if (default_rso_preset == "Peninsular Malaysia Geocentric RSO") else rso_params_dict
+        else:
+            selected_rso_params = None
+
+        proc_type_proj = st.radio("Processing Type:", ["Single Point", "Batch File Processing"], horizontal=True, key="proc_type_proj")
+
+        if proc_type_proj == "Single Point":
+            st.markdown("---")
+            st.subheader("📍 Single Point Map Projection Transformation")
+            stn_name_proj = st.text_input("Station Name", value="STN_PROJ_01", key="stn_name_proj")
+            
+            is_forward = from_name in ["GDM2000", "BT68"]
+
+            if is_forward:
+                coord_fmt_p = st.radio("Latitude/Longitude Format:", ["DMS String", "Decimal Degrees (DD)"], horizontal=True, key="p_coord_fmt")
+                col_i1, col_i2 = st.columns(2)
+                
+                if coord_fmt_p == "DMS String":
+                    with col_i1:
+                        st.markdown("**Latitude**")
+                        p_d_lat = st.number_input("Deg", value=1, key="p_d_lat")
+                        p_m_lat = st.number_input("Min", value=29, key="p_m_lat")
+                        p_s_lat = st.number_input("Sec", value=0.0, format="%.4f", key="p_s_lat")
+                    with col_i2:
+                        st.markdown("**Longitude**")
+                        p_d_lon = st.number_input("Deg", value=103, key="p_d_lon")
+                        p_m_lon = st.number_input("Min", value=45, key="p_m_lon")
+                        p_s_lon = st.number_input("Sec", value=0.0, format="%.4f", key="p_s_lon")
+                else:
+                    with col_i1:
+                        p_dd_lat = st.number_input("Latitude (Decimal Degrees)", value=1.4833333, format="%.5f", key="p_dd_lat")
+                    with col_i2:
+                        p_dd_lon = st.number_input("Longitude (Decimal Degrees)", value=103.7500000, format="%.5f", key="p_dd_lon")
+            else:
+                col_i1, col_i2 = st.columns(2)
+                with col_i1:
+                    in_easting = st.number_input("Easting (m)", value=800000.000, format="%.3f", key="p_in_east")
+                with col_i2:
+                    in_northing = st.number_input("Northing (m)", value=300000.000, format="%.3f", key="p_in_north")
+
+            if st.button("🚀 Calculate Map Projection", type="primary", use_container_width=True, key="btn_calc_proj"):
+                if is_forward:
+                    lat_val = dt.dms_to_deg(p_d_lat, p_m_lat, p_s_lat) if coord_fmt_p == "DMS String" else p_dd_lat
+                    lon_val = dt.dms_to_deg(p_d_lon, p_m_lon, p_s_lon) if coord_fmt_p == "DMS String" else p_dd_lon
+                    
+                    if is_cassini:
+                        E, N = dt.latlon_to_cassini(lat_val, lon_val, selected_state)
+                    else:
+                        E, N = dt.latlon_to_rso(lat_val, lon_val, custom_params=selected_rso_params)
+                    
+                    df_res = pd.DataFrame([{
+                        "Station": stn_name_proj,
+                        f"{from_name} Latitude": f"{lat_val:.5f}°",
+                        f"{from_name} Longitude": f"{lon_val:.5f}°",
+                        f"{to_name} Easting (m)": f"{E:.3f}",
+                        f"{to_name} Northing (m)": f"{N:.3f}"
+                    }])
+                else:
+                    if is_cassini:
+                        lat_val, lon_val = dt.cassini_to_latlon(in_easting, in_northing, selected_state)
+                    else:
+                        lat_val, lon_val = dt.rso_to_latlon(in_easting, in_northing, custom_params=selected_rso_params)
+                    
+                    df_res = pd.DataFrame([{
+                        "Station": stn_name_proj,
+                        f"{from_name} Easting (m)": f"{in_easting:.3f}",
+                        f"{from_name} Northing (m)": f"{in_northing:.3f}",
+                        f"{to_name} Latitude": f"{lat_val:.5f}°",
+                        f"{to_name} Longitude": f"{lon_val:.5f}°"
+                    }])
+
+                st.success("Projection Transformation Complete!")
+                st.dataframe(df_res, use_container_width=True, hide_index=True)
+                render_single_point_downloads(df_res, filename_prefix=f"Projection_Single_{from_name}_to_{to_name}")
+
+        else:
+            st.markdown("---")
+            st.subheader("📁 Batch Map Projection Transformation")
+            batch_file_proj = st.file_uploader("Upload Coordinate File (.csv or .xlsx)", type=["csv", "xlsx"], key="bproj_file")
+
+            if batch_file_proj is not None:
+                try:
+                    df_bproj = pd.read_csv(batch_file_proj) if batch_file_proj.name.endswith(".csv") else pd.read_excel(batch_file_proj)
+                    st.dataframe(df_bproj.head(5), use_container_width=True)
+
+                    cols = list(df_bproj.columns)
+                    c_c1, c_c2 = st.columns(2)
+                    with c_c1:
+                        c1_col = st.selectbox("Select Coordinate 1 Column (Lat / Easting):", cols, index=0, key="bproj_c1")
+                    with c_c2:
+                        c2_col = st.selectbox("Select Coordinate 2 Column (Lon / Northing):", cols, index=min(1, len(cols) - 1), key="bproj_c2")
+
+                    if st.button("🚀 Run Batch Projection", type="primary", use_container_width=True, key="btn_bproj_run"):
+                        df_out = df_bproj.copy()
+                        res_c1, res_c2 = [], []
+
+                        is_forward = from_name in ["GDM2000", "BT68"]
+
+                        for _, row in df_bproj.iterrows():
+                            val1 = parse_coordinate_to_deg(row[c1_col])
+                            val2 = parse_coordinate_to_deg(row[c2_col])
+
+                            if is_forward:
+                                if is_cassini:
+                                    e, n = dt.latlon_to_cassini(val1, val2, selected_state)
+                                else:
+                                    e, n = dt.latlon_to_rso(val1, val2, custom_params=selected_rso_params)
+                                res_c1.append(e)
+                                res_c2.append(n)
+                            else:
+                                if is_cassini:
+                                    lat, lon = dt.cassini_to_latlon(val1, val2, selected_state)
+                                else:
+                                    lat, lon = dt.rso_to_latlon(val1, val2, custom_params=selected_rso_params)
+                                res_c1.append(lat)
+                                res_c2.append(lon)
+
+                        if is_forward:
+                            df_out[f"{to_name} Easting"] = res_c1
+                            df_out[f"{to_name} Northing"] = res_c2
+                        else:
+                            df_out[f"{to_name} Latitude"] = res_c1
+                            df_out[f"{to_name} Longitude"] = res_c2
+
+                        st.success("Batch Map Projection Processed successfully!")
+                        st.dataframe(df_out.head(10), use_container_width=True)
+
+                        excel_buf = io.BytesIO()
+                        with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
+                            df_out.to_excel(writer, sheet_name="Projection_Results", index=False)
+
+                        d_col1, d_col2 = st.columns(2)
+                        with d_col1:
+                            st.download_button("📥 Download CSV", data=df_out.to_csv(index=False).encode("utf-8"), file_name="Batch_Projection_Results.csv", mime="text/csv", use_container_width=True)
+                        with d_col2:
+                            st.download_button("📥 Download Excel", data=excel_buf.getvalue(), file_name="Batch_Projection_Results.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+
+                except Exception as e:
+                    st.error(f"Processing error: {e}")
+
+    # -----------------------------------------------------
+    # MODE 3: Geodetic Tools (Conversion)
+    # -----------------------------------------------------
     elif mode == "Geodetic Tools (Conversion)":
         st.subheader("🌐 Geodetic Coordinate Conversion Tools")
+
         tool_choice = st.radio("Tool Selection:", ["Geographical to Cartesian", "Cartesian to Geographical"], horizontal=True, key="tool_choice")
+
         ellipsoid_name = st.selectbox("Select Pre-Defined Ellipsoid:", list(dt.ELLIPSOIDS.keys()), key="ell_sel")
+        ell_data = dt.ELLIPSOIDS[ellipsoid_name]
 
-        if tool_choice == "Geographical to Cartesian":
-            col_g1, col_g2, col_g3 = st.columns(3)
-            with col_g1:
-                g_dd_lat = st.number_input("Latitude (Decimal Degrees)", value=1.4833333, format="%.5f", key="g_dd_lat")
-            with col_g2:
-                g_dd_lon = st.number_input("Longitude (Decimal Degrees)", value=103.7500000, format="%.5f", key="g_dd_lon")
-            with col_g3:
-                g_h = st.number_input("Ellipsoidal Height (m)", value=10.0, format="%.3f", key="g_h")
+        c_a, c_f = st.columns(2)
+        c_a.metric("Semi-Major Axis (a)", f"{ell_data['a']:.3f} m")
+        c_f.metric("Flattening (1/f)", f"{ell_data['inv_f']:.6f}")
 
-            if st.button("⚙️ Compute Cartesian (X, Y, Z)", type="primary", use_container_width=True, key="btn_geo_cart"):
-                X, Y, Z = dt.geo_to_cartesian(g_dd_lat, g_dd_lon, g_h, ellipsoid_name)
-                st.success("Conversion Computed Successfully!")
-                df_res = pd.DataFrame([{
-                    "Station": "STN_TOOL_01", "X (m)": f"{X:.4f}", "Y (m)": f"{Y:.4f}", "Z (m)": f"{Z:.4f}"
-                }])
-                st.dataframe(df_res, use_container_width=True, hide_index=True)
+        st.markdown("---")
+        proc_type_tools = st.radio("Processing Type:", ["Single Point", "Batch File Processing"], horizontal=True, key="proc_type_tools")
+
+        if proc_type_tools == "Single Point":
+            stn_name_tools = st.text_input("Station Name", value="STN_TOOL_01", key="stn_name_tools")
+            
+            if tool_choice == "Geographical to Cartesian":
+                coord_fmt_tools = st.radio("Coordinate Input Format:", ["DMS String", "Decimal Degrees (DD)"], horizontal=True, key="tools_coord_fmt")
+                
+                col_g1, col_g2, col_g3 = st.columns(3)
+                if coord_fmt_tools == "DMS String":
+                    with col_g1:
+                        st.markdown("**Latitude**")
+                        g_d_lat = st.number_input("Deg", value=1, key="g_d_lat")
+                        g_m_lat = st.number_input("Min", value=29, key="g_m_lat")
+                        g_s_lat = st.number_input("Sec", value=0.0, format="%.4f", key="g_s_lat")
+                    with col_g2:
+                        st.markdown("**Longitude**")
+                        g_d_lon = st.number_input("Deg", value=103, key="g_d_lon")
+                        g_m_lon = st.number_input("Min", value=45, key="g_m_lon")
+                        g_s_lon = st.number_input("Sec", value=0.0, format="%.4f", key="g_s_lon")
+                else:
+                    with col_g1:
+                        g_dd_lat = st.number_input("Latitude (Decimal Degrees)", value=1.4833333, format="%.5f", key="g_dd_lat")
+                    with col_g2:
+                        g_dd_lon = st.number_input("Longitude (Decimal Degrees)", value=103.7500000, format="%.5f", key="g_dd_lon")
+
+                with col_g3:
+                    g_h = st.number_input("Ellipsoidal Height (m)", value=10.0, format="%.3f", key="g_h")
+
+                if st.button("⚙️ Compute Cartesian (X, Y, Z)", type="primary", use_container_width=True, key="btn_geo_cart"):
+                    lat_val = dt.dms_to_deg(g_d_lat, g_m_lat, g_s_lat) if coord_fmt_tools == "DMS String" else g_dd_lat
+                    lon_val = dt.dms_to_deg(g_d_lon, g_m_lon, g_s_lon) if coord_fmt_tools == "DMS String" else g_dd_lon
+                    
+                    X, Y, Z = dt.geo_to_cartesian(lat_val, lon_val, g_h, ellipsoid_name)
+
+                    st.success("Conversion Computed Successfully!")
+                    
+                    df_res = pd.DataFrame([{
+                        "Station": stn_name_tools,
+                        "Geographical Latitude": f"{lat_val:.5f}°",
+                        "Geographical Longitude": f"{lon_val:.5f}°",
+                        "Geographical Ell. Height (m)": f"{g_h:.3f}",
+                        "Cartesian X (m)": f"{X:.4f}",
+                        "Cartesian Y (m)": f"{Y:.4f}",
+                        "Cartesian Z (m)": f"{Z:.4f}"
+                    }])
+                    st.dataframe(df_res, use_container_width=True, hide_index=True)
+                    render_single_point_downloads(df_res, filename_prefix="Conversion_Geo_to_Cartesian")
+
+            else:
+                col_c1, col_c2, col_c3 = st.columns(3)
+                with col_c1:
+                    in_X = st.number_input("X (meters)", value=-1468840.4040, format="%.4f", key="in_x")
+                with col_c2:
+                    in_Y = st.number_input("Y (meters)", value=6203485.7950, format="%.4f", key="in_y")
+                with col_c3:
+                    in_Z = st.number_input("Z (meters)", value=200173.7140, format="%.4f", key="in_z")
+
+                if st.button("⚙️ Compute Geographical (Lat, Lon, H)", type="primary", use_container_width=True, key="btn_cart_geo"):
+                    lat_deg, lon_deg, height = dt.cartesian_to_geo(in_X, in_Y, in_Z, ellipsoid_name)
+
+                    st.success("Conversion Computed Successfully!")
+                    
+                    df_res = pd.DataFrame([{
+                        "Station": stn_name_tools,
+                        "Cartesian X (m)": f"{in_X:.4f}",
+                        "Cartesian Y (m)": f"{in_Y:.4f}",
+                        "Cartesian Z (m)": f"{in_Z:.4f}",
+                        "Geographical Latitude": f"{lat_deg:.5f}°",
+                        "Geographical Longitude": f"{lon_deg:.5f}°",
+                        "Geographical Ell. Height (m)": f"{height:.4f}"
+                    }])
+                    st.dataframe(df_res, use_container_width=True, hide_index=True)
+                    render_single_point_downloads(df_res, filename_prefix="Conversion_Cartesian_to_Geo")
+
         else:
-            col_c1, col_c2, col_c3 = st.columns(3)
-            with col_c1:
-                in_X = st.number_input("X (meters)", value=-1468840.4040, format="%.4f", key="in_x")
-            with col_c2:
-                in_Y = st.number_input("Y (meters)", value=6203485.7950, format="%.4f", key="in_y")
-            with col_c3:
-                in_Z = st.number_input("Z (meters)", value=200173.7140, format="%.4f", key="in_z")
+            st.markdown("---")
+            st.subheader("📁 Batch Geodetic Tools Conversion")
+            batch_file_tools = st.file_uploader("Upload Batch File (.csv or .xlsx)", type=["csv", "xlsx"], key="btools_file")
 
-            if st.button("⚙️ Compute Geographical (Lat, Lon, H)", type="primary", use_container_width=True, key="btn_cart_geo"):
-                lat_deg, lon_deg, height = dt.cartesian_to_geo(in_X, in_Y, in_Z, ellipsoid_name)
-                st.success("Conversion Computed Successfully!")
-                df_res = pd.DataFrame([{
-                    "Station": "STN_TOOL_01", "Latitude": f"{lat_deg:.6f}°", "Longitude": f"{lon_deg:.6f}°", "Height (m)": f"{height:.4f}"
-                }])
-                st.dataframe(df_res, use_container_width=True, hide_index=True)
+            if batch_file_tools is not None:
+                try:
+                    df_btools = pd.read_csv(batch_file_tools) if batch_file_tools.name.endswith(".csv") else pd.read_excel(batch_file_tools)
+                    st.dataframe(df_btools.head(5), use_container_width=True)
+
+                    cols = list(df_btools.columns)
+                    df_out = df_btools.copy()
+
+                    if tool_choice == "Geographical to Cartesian":
+                        c_lat, c_lon, c_h = st.columns(3)
+                        with c_lat:
+                            lat_c = st.selectbox("Latitude Column:", cols, index=0, key="btool_lat")
+                        with c_lon:
+                            lon_c = st.selectbox("Longitude Column:", cols, index=min(1, len(cols)-1), key="btool_lon")
+                        with c_h:
+                            h_c = st.selectbox("Height Column:", cols, index=min(2, len(cols)-1), key="btool_h")
+
+                        if st.button("🚀 Process Batch Geo -> Cartesian", type="primary", use_container_width=True, key="btn_btool_geo_run"):
+                            X_list, Y_list, Z_list = [], [], []
+                            for _, row in df_btools.iterrows():
+                                lat_deg = parse_coordinate_to_deg(row[lat_c])
+                                lon_deg = parse_coordinate_to_deg(row[lon_c])
+                                h_val = float(row[h_c]) if pd.notna(row[h_c]) else 0.0
+                                X, Y, Z = dt.geo_to_cartesian(lat_deg, lon_deg, h_val, ellipsoid_name)
+                                X_list.append(round(X, 4))
+                                Y_list.append(round(Y, 4))
+                                Z_list.append(round(Z, 4))
+
+                            df_out["Cartesian X (m)"] = X_list
+                            df_out["Cartesian Y (m)"] = Y_list
+                            df_out["Cartesian Z (m)"] = Z_list
+
+                            st.success("Batch Conversion Complete!")
+                            st.dataframe(df_out.head(10), use_container_width=True)
+
+                    else:
+                        c_x, c_y, c_z = st.columns(3)
+                        with c_x:
+                            x_c = st.selectbox("X Column:", cols, index=0, key="btool_x")
+                        with c_y:
+                            y_c = st.selectbox("Y Column:", cols, index=min(1, len(cols)-1), key="btool_y")
+                        with c_z:
+                            z_c = st.selectbox("Z Column:", cols, index=min(2, len(cols)-1), key="btool_z")
+
+                        if st.button("🚀 Process Batch Cartesian -> Geo", type="primary", use_container_width=True, key="btn_btool_cart_run"):
+                            lat_list, lon_list, h_list = [], [], []
+                            for _, row in df_btools.iterrows():
+                                x_val = float(row[x_c])
+                                y_val = float(row[y_c])
+                                z_val = float(row[z_c])
+                                lat_deg, lon_deg, h_val = dt.cartesian_to_geo(x_val, y_val, z_val, ellipsoid_name)
+                                lat_list.append(round(lat_deg, 8))
+                                lon_list.append(round(lon_deg, 8))
+                                h_list.append(round(h_val, 4))
+
+                            df_out["Geographical Latitude"] = lat_list
+                            df_out["Geographical Longitude"] = lon_list
+                            df_out["Geographical Ell. Height (m)"] = h_list
+
+                            st.success("Batch Conversion Complete!")
+                            st.dataframe(df_out.head(10), use_container_width=True)
+
+                    excel_buf = io.BytesIO()
+                    with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
+                        df_out.to_excel(writer, sheet_name="Tools_Converted", index=False)
+
+                    d_col1, d_col2 = st.columns(2)
+                    with d_col1:
+                        st.download_button("📥 Download CSV", data=df_out.to_csv(index=False).encode("utf-8"), file_name="Batch_Tools_Results.csv", mime="text/csv", use_container_width=True)
+                    with d_col2:
+                        st.download_button("📥 Download Excel", data=excel_buf.getvalue(), file_name="Batch_Tools_Results.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+
+                except Exception as e:
+                    st.error(f"Processing error: {e}")
