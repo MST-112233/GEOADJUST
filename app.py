@@ -751,36 +751,106 @@ with tab1:
             meta = st.session_state["proj_meta"]
             st.info(f"Project: **{meta['name']}** | Benchmark: **{meta['bm_name']} ({meta['bm_height']:.4f} m)**")
 
-            with st.form("obs_form", clear_on_submit=True):
+            # Persistent draft: the previous To station becomes the next From station.
+            if "lev_draft_from" not in st.session_state:
+                st.session_state["lev_draft_from"] = meta["bm_name"]
+            if "lev_draft_to" not in st.session_state:
+                st.session_state["lev_draft_to"] = ""
+            for field in ("lev_draft_bs", "lev_draft_fs", "lev_draft_dist"):
+                if field not in st.session_state:
+                    st.session_state[field] = ""
+
+            st.caption("After adding a record, its To Station is automatically carried forward as the next From Station. Enter new BS and FS readings for each setup.")
+            with st.form("obs_form"):
                 col_o1, col_o2 = st.columns(2)
                 with col_o1:
-                    from_stn = st.text_input("From Station (e.g. BM1 or P1)", value=meta["bm_name"])
-                    bs_val = st.number_input("Backsight (BS) value (m)", value=1.523, format="%.4f")
+                    from_stn = st.text_input("From Station (e.g. BM1)", key="lev_draft_from")
+                    bs_text = st.text_input("Backsight (BS) value (m)", key="lev_draft_bs", placeholder="e.g. 1.5230")
                 with col_o2:
-                    to_stn = st.text_input("To Station (e.g. P1 or P2)", value="P1")
-                    fs_val = st.number_input("Foresight (FS) value (m)", value=0.612, format="%.4f")
-                
-                dist_val = st.number_input("Distance (m) [Optional]", value=120.5, format="%.2f")
-
+                    to_stn = st.text_input("To Station (e.g. CP01)", key="lev_draft_to", placeholder="e.g. CP01")
+                    fs_text = st.text_input("Foresight (FS) value (m)", key="lev_draft_fs", placeholder="e.g. 0.6120")
+                dist_text = st.text_input("Distance (m) [Optional]", key="lev_draft_dist", placeholder="e.g. 120.50")
                 submitted = st.form_submit_button("➕ Add Observation Record", use_container_width=True)
-                if submitted:
+
+            if submitted:
+                try:
+                    origin, target = from_stn.strip(), to_stn.strip()
+                    if not origin or not target:
+                        raise ValueError("From Station and To Station are required.")
+                    if origin.casefold() == target.casefold():
+                        raise ValueError("From Station and To Station must be different.")
+                    bs_val, fs_val = float(bs_text), float(fs_text)
+                    distance = float(dist_text) if dist_text.strip() else 1.0
+                    import math
+                    if not all(math.isfinite(v) for v in (bs_val, fs_val, distance)):
+                        raise ValueError("Readings and distance must be finite numbers.")
+                    if distance <= 0:
+                        raise ValueError("Distance must be greater than zero.")
                     st.session_state["manual_records"].append({
-                        "From": from_stn.strip(),
-                        "To": to_stn.strip(),
-                        "Backsight (m)": bs_val,
-                        "Foresight (m)": fs_val,
-                        "Distance (m)": dist_val
+                        "From": origin, "To": target,
+                        "Backsight (m)": bs_val, "Foresight (m)": fs_val,
+                        "Distance (m)": distance,
                     })
-                    st.success(f"Added observation from {from_stn} to {to_stn} successfully!")
+                    st.session_state["lev_draft_from"] = target
+                    st.session_state["lev_draft_to"] = ""
+                    st.session_state["lev_draft_bs"] = ""
+                    st.session_state["lev_draft_fs"] = ""
+                    st.session_state["lev_draft_dist"] = ""
+                    st.success(f"Added {origin} → {target}. Next From Station: {target}.")
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(f"Invalid observation: {exc}")
 
             if st.session_state["manual_records"]:
                 st.markdown("#### 📑 Collected Field Observations So Far:")
-                df_collected = pd.DataFrame(st.session_state["manual_records"])
-                st.dataframe(df_collected, use_container_width=True, hide_index=True)
-
-                if st.button("🗑️ Clear All Records", use_container_width=True):
-                    st.session_state["manual_records"] = []
-                    st.rerun()
+                st.caption("Double-click a cell to edit. Tick Delete to remove a row, then click Save Changes.")
+                current = pd.DataFrame(st.session_state["manual_records"])
+                current.insert(0, "Delete", False)
+                edited = st.data_editor(
+                    current, hide_index=True, use_container_width=True,
+                    num_rows="fixed", key="lev_records_editor",
+                    column_config={
+                        "Delete": st.column_config.CheckboxColumn("Delete", default=False),
+                        "From": st.column_config.TextColumn("From Station", required=True),
+                        "To": st.column_config.TextColumn("To Station", required=True),
+                        "Backsight (m)": st.column_config.NumberColumn("BS (m)", format="%.4f", required=True),
+                        "Foresight (m)": st.column_config.NumberColumn("FS (m)", format="%.4f", required=True),
+                        "Distance (m)": st.column_config.NumberColumn("Distance (m)", format="%.2f", min_value=0.000001, required=True),
+                    },
+                )
+                c_save, c_clear = st.columns(2)
+                with c_save:
+                    if st.button("💾 Save Changes / Delete Selected", use_container_width=True, type="primary"):
+                        try:
+                            revised = []
+                            import math
+                            for _, row in edited.iterrows():
+                                if bool(row["Delete"]):
+                                    continue
+                                origin, target = str(row["From"]).strip(), str(row["To"]).strip()
+                                if not origin or not target or origin.casefold() == target.casefold():
+                                    raise ValueError("Every retained row needs two different station names.")
+                                bs, fs, distance = (float(row[k]) for k in ("Backsight (m)", "Foresight (m)", "Distance (m)"))
+                                if not all(math.isfinite(v) for v in (bs, fs, distance)) or distance <= 0:
+                                    raise ValueError("Every retained row needs finite readings and a positive distance.")
+                                revised.append({"From": origin, "To": target, "Backsight (m)": bs,
+                                                "Foresight (m)": fs, "Distance (m)": distance})
+                            st.session_state["manual_records"] = revised
+                            if revised:
+                                st.session_state["lev_draft_from"] = revised[-1]["To"]
+                            else:
+                                st.session_state["lev_draft_from"] = meta["bm_name"]
+                            st.session_state.pop("lev_records_editor", None)
+                            st.success("Observation changes saved.")
+                            st.rerun()
+                        except (ValueError, TypeError) as exc:
+                            st.error(f"Cannot save changes: {exc}")
+                with c_clear:
+                    if st.button("🗑️ Clear All Records", use_container_width=True):
+                        st.session_state["manual_records"] = []
+                        st.session_state["lev_draft_from"] = meta["bm_name"]
+                        st.session_state.pop("lev_records_editor", None)
+                        st.rerun()
 
             col_nav1, col_nav2 = st.columns(2)
             with col_nav1:
@@ -911,7 +981,7 @@ with tab1:
 
             story.append(Paragraph("<b>Adjustment Summary Statistics</b>", styles['Heading2']))
             stat_data = [
-                ["Degrees of Freedom (f):", str(res_data['dof']), "A Posteriori Std. Dev. (σ₀):", f"{res_data['sigma0']:.4f}"],
+                ["Degrees of Freedom (f):", str(res_data['dof']), Paragraph("A Posteriori Variance (&#963;<sub>0</sub><super>2</super>):", styles["Normal"]), f"{res_data['sigma0_sq']:.4f}"],
                 ["Sum of Squares (Σv²):", f"{res_data['vTpv']:.4f} m²", "Chi-Square Test:", str(res_data['chi2_status'])]
             ]
             t_stat = Table(stat_data, colWidths=[140, 130, 140, 130])
