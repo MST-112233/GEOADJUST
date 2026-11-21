@@ -751,6 +751,19 @@ with tab1:
             meta = st.session_state["proj_meta"]
             st.info(f"Project: **{meta['name']}** | Benchmark: **{meta['bm_name']} ({meta['bm_height']:.4f} m)**")
 
+            # Apply form/editor changes BEFORE their Streamlit widgets are instantiated.
+            # Streamlit forbids changing a widget's session-state key later in the
+            # same script run (StreamlitWidgetAlreadyInstantiatedError).
+            pending_next_from = st.session_state.pop("lev_pending_next_from", None)
+            if pending_next_from is not None:
+                st.session_state["lev_draft_from"] = pending_next_from
+                st.session_state["lev_draft_to"] = ""
+                st.session_state["lev_draft_bs"] = ""
+                st.session_state["lev_draft_fs"] = ""
+                st.session_state["lev_draft_dist"] = ""
+                # Refresh edited table after an addition, edit, or deletion.
+                st.session_state.pop("lev_records_editor", None)
+
             # Persistent draft: the previous To station becomes the next From station.
             if "lev_draft_from" not in st.session_state:
                 st.session_state["lev_draft_from"] = meta["bm_name"]
@@ -791,11 +804,8 @@ with tab1:
                         "Backsight (m)": bs_val, "Foresight (m)": fs_val,
                         "Distance (m)": distance,
                     })
-                    st.session_state["lev_draft_from"] = target
-                    st.session_state["lev_draft_to"] = ""
-                    st.session_state["lev_draft_bs"] = ""
-                    st.session_state["lev_draft_fs"] = ""
-                    st.session_state["lev_draft_dist"] = ""
+                    # Defer widget-state reset until the start of the next run.
+                    st.session_state["lev_pending_next_from"] = target
                     st.success(f"Added {origin} → {target}. Next From Station: {target}.")
                     st.rerun()
                 except ValueError as exc:
@@ -836,11 +846,9 @@ with tab1:
                                 revised.append({"From": origin, "To": target, "Backsight (m)": bs,
                                                 "Foresight (m)": fs, "Distance (m)": distance})
                             st.session_state["manual_records"] = revised
-                            if revised:
-                                st.session_state["lev_draft_from"] = revised[-1]["To"]
-                            else:
-                                st.session_state["lev_draft_from"] = meta["bm_name"]
-                            st.session_state.pop("lev_records_editor", None)
+                            st.session_state["lev_pending_next_from"] = (
+                                revised[-1]["To"] if revised else meta["bm_name"]
+                            )
                             st.success("Observation changes saved.")
                             st.rerun()
                         except (ValueError, TypeError) as exc:
@@ -848,8 +856,7 @@ with tab1:
                 with c_clear:
                     if st.button("🗑️ Clear All Records", use_container_width=True):
                         st.session_state["manual_records"] = []
-                        st.session_state["lev_draft_from"] = meta["bm_name"]
-                        st.session_state.pop("lev_records_editor", None)
+                        st.session_state["lev_pending_next_from"] = meta["bm_name"]
                         st.rerun()
 
             col_nav1, col_nav2 = st.columns(2)
