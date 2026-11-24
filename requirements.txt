@@ -8,5 +8,3 @@ streamlit-folium
 pyproj>=3.6
 scipy
 reportlab
-
-
