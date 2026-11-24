@@ -677,12 +677,14 @@ with tab1:
     df_input = None
 
     if input_method == "📁 Upload CSV / Excel File":
-        col_cfg1, col_cfg2 = st.columns(2)
+        col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
         with col_cfg1:
             bm_name = st.text_input("Fixed Benchmark Station Name", value="BM1", key="1d_bm_name_upl")
             has_header = st.checkbox("File contains a header row", value=True, key="1d_header")
         with col_cfg2:
             bm_height = st.number_input("Benchmark Known RL (m)", value=100.0000, step=0.0001, format="%.4f", key="1d_bm_height_upl")
+            instrument_std_1d = st.number_input("Instrument Std Error (m/km)", value=0.003, step=0.001, format="%.4f", key="1d_inst_std_upl", help="StarNet default: 0.003 m/km. Used to compute observation weights: StdErr = C × √(D_km)")
+        with col_cfg3:
             custom_filename = st.text_input("Output Filename Base", value="1D_Adjustment_Report", key="1d_out_name_upl")
 
         uploaded_file = st.file_uploader("Upload Leveling File (.csv or .xlsx)", type=["csv", "xlsx"], key="1d_file_uploader")
@@ -731,6 +733,7 @@ with tab1:
             p_date = st.date_input("Date", value=meta["date"], key="w_pdate")
             p_inst = st.text_input("Name of Instrument", value=meta["instrument"], key="w_pinst")
             p_obs = st.text_input("Observer", value=meta["observer"], key="w_pobs")
+            p_inst_std = st.number_input("Instrument Std Error (m/km)", value=meta.get("instrument_std", 0.003), step=0.001, format="%.4f", key="w_inst_std", help="StarNet default: 0.003 m/km")
             
             col_b1, col_b2 = st.columns(2)
             with col_b1:
@@ -741,7 +744,8 @@ with tab1:
             if st.button("Next ➔ Enter Observations", type="primary", use_container_width=True):
                 st.session_state["proj_meta"] = {
                     "name": p_name, "date": p_date, "instrument": p_inst,
-                    "observer": p_obs, "bm_name": p_bm_name, "bm_height": p_bm_height
+                    "observer": p_obs, "bm_name": p_bm_name, "bm_height": p_bm_height,
+                    "instrument_std": p_inst_std
                 }
                 st.session_state["wizard_step"] = 2
                 st.rerun()
@@ -891,7 +895,7 @@ with tab1:
             with col_w_comp:
                 if st.button("🚀 Run 1D Adjustment", type="primary", use_container_width=True):
                     try:
-                        res = adjust_1d_network(df_input, meta["bm_name"], meta["bm_height"])
+                        res = adjust_1d_network(df_input, meta["bm_name"], meta["bm_height"], instrument_std=meta.get("instrument_std", 0.003))
                         st.session_state["results_1d"] = res
                         st.session_state["custom_filename_1d"] = f"1D_Report_{meta['name'].replace(' ', '_')}"
                         APP_REGISTRY[auth["room_id"]]["data_store"]["results_1d"] = res
@@ -903,12 +907,13 @@ with tab1:
     if input_method == "📁 Upload CSV / Excel File" and df_input is not None:
         bm_name = st.session_state.get("1d_bm_name_upl", "BM1")
         bm_height = st.session_state.get("1d_bm_height_upl", 100.0)
+        instrument_std_1d = st.session_state.get("1d_inst_std_upl", 0.003)
         custom_filename = st.session_state.get("1d_out_name_upl", "1D_Adjustment_Report")
 
         if st.button("🚀 Run 1D Adjustment", type="primary", use_container_width=True):
             with st.spinner("Computing Least Squares Adjustment..."):
                 try:
-                    res = adjust_1d_network(df_input, bm_name, bm_height)
+                    res = adjust_1d_network(df_input, bm_name, bm_height, instrument_std=instrument_std_1d)
                     st.session_state["results_1d"] = res
                     st.session_state["custom_filename_1d"] = custom_filename
                     APP_REGISTRY[auth["room_id"]]["data_store"]["results_1d"] = res
@@ -927,20 +932,24 @@ with tab1:
         })
 
         st.markdown("---")
-        st.subheader("📊 Adjustment Summary Statistics")
-        m1, m2, m3, m4 = st.columns(4)
+        st.subheader("📊 Adjustment Statistical Summary (StarNet Format)")
+        m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Ref Variance (σ₀²)", f"{res['sigma0_sq']:.6f}")
-        m2.metric("Ref Std Dev (σ₀)", f"{res['sigma0']:.5f}")
-        m3.metric("Degrees of Freedom", res["dof"])
-        m4.metric("Chi-Square Test", res["chi2_status"])
+        m2.metric("Error Factor (σ₀)", f"{res['sigma0']:.5f}")
+        m3.metric("Redundancy (DOF)", res["dof"])
+        m4.metric("Chi-Square Test (5%)", res["chi2_status"])
+        m5.metric("Sum Sq of StdRes (vᵀPv)", f"{res['vTpv']:.4f}")
+
+        if res.get("chi2_lower", 0) > 0:
+            st.info(f"Chi-Square Bounds: {res['chi2_lower']:.6f} / {res['chi2_upper']:.6f}  |  Instrument Std Error: {res.get('instrument_std', 0.003)} m/km")
 
         col_tbl1, col_tbl2 = st.columns(2)
         with col_tbl1:
-            st.subheader("📍 Adjusted Reduced Levels (RL)")
+            st.subheader("📍 Adjusted Elevations & Error Propagation")
             st.dataframe(res["stations"], use_container_width=True, hide_index=True)
 
         with col_tbl2:
-            st.subheader("📏 Observation Residuals")
+            st.subheader("📏 Adjusted Observations & Residuals")
             st.dataframe(res["residuals"], use_container_width=True, hide_index=True)
 
         st.markdown("---")
@@ -966,7 +975,7 @@ with tab1:
             )
 
             story.append(Paragraph("GEOADJUST — 1D Levelling Adjustment Report", title_style))
-            story.append(Paragraph("Geodetic Network Least Squares Adjustment System", subtitle_style))
+            story.append(Paragraph("Geodetic Network Least Squares Adjustment System (StarNet-Aligned Model)", subtitle_style))
             story.append(Spacer(1, 8))
 
             meta_data = [
@@ -986,10 +995,18 @@ with tab1:
             story.append(t_meta)
             story.append(Spacer(1, 12))
 
-            story.append(Paragraph("<b>Adjustment Summary Statistics</b>", styles['Heading2']))
+            story.append(Paragraph("<b>Adjustment Statistical Summary</b>", styles['Heading2']))
+            chi2_bounds_str = f"{res_data.get('chi2_lower', 0):.6f} / {res_data.get('chi2_upper', 0):.6f}" if res_data.get('chi2_lower', 0) > 0 else "N/A"
             stat_data = [
-                ["Degrees of Freedom (f):", str(res_data['dof']), Paragraph("A Posteriori Variance (&#963;<sub>0</sub><super>2</super>):", styles["Normal"]), f"{res_data['sigma0_sq']:.4f}"],
-                ["Sum of Squares (Σv²):", f"{res_data['vTpv']:.4f} m²", "Chi-Square Test:", str(res_data['chi2_status'])]
+                ["Number of Stations:", str(res_data.get('num_stations', '-')),
+                 Paragraph("Instrument Std Error:", styles["Normal"]), f"{res_data.get('instrument_std', 0.003)} m/km"],
+                ["Number of Observations:", str(res_data.get('num_obs', '-')),
+                 "Redundant Observations (DOF):", str(res_data['dof'])],
+                ["Sum Sq of StdRes (vᵀPv):", f"{res_data['vTpv']:.4f}",
+                 Paragraph("Error Factor (σ₀):", styles["Normal"]), f"{res_data['sigma0']:.4f}"],
+                [Paragraph("A Posteriori Variance (σ₀²):", styles["Normal"]), f"{res_data['sigma0_sq']:.6f}",
+                 "Chi-Square Test (5%):", str(res_data['chi2_status'])],
+                ["Chi-Square Bounds:", chi2_bounds_str, "", ""],
             ]
             t_stat = Table(stat_data, colWidths=[140, 130, 140, 130])
             t_stat.setStyle(TableStyle([
@@ -1001,10 +1018,10 @@ with tab1:
             story.append(t_stat)
             story.append(Spacer(1, 12))
 
-            story.append(Paragraph("<b>Adjusted Reduced Levels (RL)</b>", styles['Heading2']))
+            story.append(Paragraph("<b>Adjusted Elevations and Error Propagation (Meters)</b>", styles['Heading2']))
             stn_df = res_data['stations']
             stn_table_data = [list(stn_df.columns)] + stn_df.values.tolist()
-            t_stn = Table(stn_table_data, colWidths=[140, 140, 140, 120])
+            t_stn = Table(stn_table_data, colWidths=[60, 80, 80, 80, 70, 80, 80])
             t_stn.setStyle(TableStyle([
                 ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E88E5')),
                 ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
@@ -1018,10 +1035,10 @@ with tab1:
             story.append(t_stn)
             story.append(Spacer(1, 12))
 
-            story.append(Paragraph("<b>Observation Residuals</b>", styles['Heading2']))
+            story.append(Paragraph("<b>Adjusted Observations and Residuals</b>", styles['Heading2']))
             res_df = res_data['residuals']
             res_table_data = [list(res_df.columns)] + res_df.values.tolist()
-            t_res = Table(res_table_data, colWidths=[60, 60, 80, 80, 80, 90, 90])
+            t_res = Table(res_table_data, colWidths=[50, 50, 50, 50, 50, 55, 55, 55, 55, 50, 35])
             t_res.setStyle(TableStyle([
                 ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E88E5')),
                 ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
