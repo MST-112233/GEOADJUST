@@ -696,10 +696,23 @@ with tab1:
                 else:
                     df_input = pd.read_excel(uploaded_file, header=0 if has_header else None)
 
-                expected_cols = ["From", "To", "Backsight (m)", "Foresight (m)", "Distance (m)"]
+                # Auto-detect whether file contains BS/FS or direct dH
+                has_bs = any('back' in c.lower() or c.lower() == 'bs' for c in df_input.columns)
+                has_fs = any('fore' in c.lower() or c.lower() == 'fs' for c in df_input.columns)
+                has_dh = any('diff' in c.lower() or 'dh' in c.lower() or ('elev' in c.lower() and 'diff' in c.lower()) for c in df_input.columns)
+
                 if not has_header or len(df_input.columns) < 3:
-                    rename_map = {i: expected_cols[i] for i in range(min(len(df_input.columns), 5))}
+                    # No header: infer format from number of columns
+                    n_cols = len(df_input.columns)
+                    if n_cols >= 5:
+                        rename_map = {0: "From", 1: "To", 2: "Backsight (m)", 3: "Foresight (m)", 4: "Distance (m)"}
+                    elif n_cols == 4:
+                        rename_map = {0: "From", 1: "To", 2: "Diff in Height (m)", 3: "Distance (m)"}
+                    else:
+                        rename_map = {i: ["From", "To", "Diff in Height (m)"][i] for i in range(min(n_cols, 3))}
                     df_input = df_input.rename(columns=rename_map)
+                elif not (has_bs and has_fs) and not has_dh:
+                    st.warning("Could not detect Backsight/Foresight or Diff in Height columns. Expected columns: From, To, Backsight (m), Foresight (m), Distance (m) OR From, To, Diff in Height (m), Distance (m).")
 
                 st.subheader("📋 Input Data Preview")
                 st.dataframe(df_input.head(10), use_container_width=True)
@@ -751,9 +764,19 @@ with tab1:
                 st.rerun()
 
         elif step == 2:
-            st.subheader("Step 2: Enter Backsight (BS) & Foresight (FS) Observations")
+            st.subheader("Step 2: Enter Observations")
             meta = st.session_state["proj_meta"]
             st.info(f"Project: **{meta['name']}** | Benchmark: **{meta['bm_name']} ({meta['bm_height']:.4f} m)**")
+
+            # --- Select observation input mode ---
+            input_mode = st.radio(
+                "Select observation input mode:",
+                ["🧮 Backsight (BS) & Foresight (FS)", "📐 Direct Difference in Height (dH)"],
+                horizontal=True,
+                key="lev_input_mode",
+                help="Choose whether to enter raw staff readings (BS/FS) or the pre-computed elevation difference (dH = BS - FS)."
+            )
+            use_bs_fs = (input_mode == "🧮 Backsight (BS) & Foresight (FS)")
 
             # Apply form/editor changes BEFORE their Streamlit widgets are instantiated.
             # Streamlit forbids changing a widget's session-state key later in the
@@ -764,6 +787,7 @@ with tab1:
                 st.session_state["lev_draft_to"] = ""
                 st.session_state["lev_draft_bs"] = ""
                 st.session_state["lev_draft_fs"] = ""
+                st.session_state["lev_draft_dh"] = ""
                 st.session_state["lev_draft_dist"] = ""
                 # Refresh edited table after an addition, edit, or deletion.
                 st.session_state.pop("lev_records_editor", None)
@@ -773,19 +797,24 @@ with tab1:
                 st.session_state["lev_draft_from"] = meta["bm_name"]
             if "lev_draft_to" not in st.session_state:
                 st.session_state["lev_draft_to"] = ""
-            for field in ("lev_draft_bs", "lev_draft_fs", "lev_draft_dist"):
+            for field in ("lev_draft_bs", "lev_draft_fs", "lev_draft_dh", "lev_draft_dist"):
                 if field not in st.session_state:
                     st.session_state[field] = ""
 
-            st.caption("After adding a record, its To Station is automatically carried forward as the next From Station. Enter new BS and FS readings for each setup.")
+            st.caption("After adding a record, its To Station is automatically carried forward as the next From Station.")
+
             with st.form("obs_form"):
                 col_o1, col_o2 = st.columns(2)
                 with col_o1:
                     from_stn = st.text_input("From Station (e.g. BM1)", key="lev_draft_from")
-                    bs_text = st.text_input("Backsight (BS) value (m)", key="lev_draft_bs", placeholder="e.g. 1.5230")
+                    if use_bs_fs:
+                        bs_text = st.text_input("Backsight (BS) value (m)", key="lev_draft_bs", placeholder="e.g. 1.5230")
+                    else:
+                        dh_text = st.text_input("Difference in Height (dH) value (m)", key="lev_draft_dh", placeholder="e.g. -0.4525")
                 with col_o2:
                     to_stn = st.text_input("To Station (e.g. CP01)", key="lev_draft_to", placeholder="e.g. CP01")
-                    fs_text = st.text_input("Foresight (FS) value (m)", key="lev_draft_fs", placeholder="e.g. 0.6120")
+                    if use_bs_fs:
+                        fs_text = st.text_input("Foresight (FS) value (m)", key="lev_draft_fs", placeholder="e.g. 0.6120")
                 dist_text = st.text_input("Distance (m) [Optional]", key="lev_draft_dist", placeholder="e.g. 120.50")
                 submitted = st.form_submit_button("➕ Add Observation Record", use_container_width=True)
 
@@ -796,18 +825,35 @@ with tab1:
                         raise ValueError("From Station and To Station are required.")
                     if origin.casefold() == target.casefold():
                         raise ValueError("From Station and To Station must be different.")
-                    bs_val, fs_val = float(bs_text), float(fs_text)
+
                     distance = float(dist_text) if dist_text.strip() else 1.0
                     import math
-                    if not all(math.isfinite(v) for v in (bs_val, fs_val, distance)):
-                        raise ValueError("Readings and distance must be finite numbers.")
-                    if distance <= 0:
-                        raise ValueError("Distance must be greater than zero.")
-                    st.session_state["manual_records"].append({
-                        "From": origin, "To": target,
-                        "Backsight (m)": bs_val, "Foresight (m)": fs_val,
-                        "Distance (m)": distance,
-                    })
+                    if not math.isfinite(distance) or distance <= 0:
+                        raise ValueError("Distance must be a finite number greater than zero.")
+
+                    if use_bs_fs:
+                        bs_val = float(bs_text)
+                        fs_val = float(fs_text)
+                        if not all(math.isfinite(v) for v in (bs_val, fs_val)):
+                            raise ValueError("BS and FS readings must be finite numbers.")
+                        record = {
+                            "From": origin, "To": target,
+                            "Backsight (m)": bs_val, "Foresight (m)": fs_val,
+                            "Diff in Height (m)": round(bs_val - fs_val, 4),
+                            "Distance (m)": distance,
+                        }
+                    else:
+                        dh_val = float(dh_text)
+                        if not math.isfinite(dh_val):
+                            raise ValueError("Difference in Height must be a finite number.")
+                        record = {
+                            "From": origin, "To": target,
+                            "Backsight (m)": None, "Foresight (m)": None,
+                            "Diff in Height (m)": dh_val,
+                            "Distance (m)": distance,
+                        }
+
+                    st.session_state["manual_records"].append(record)
                     # Defer widget-state reset until the start of the next run.
                     st.session_state["lev_pending_next_from"] = target
                     st.success(f"Added {origin} → {target}. Next From Station: {target}.")
@@ -820,17 +866,27 @@ with tab1:
                 st.caption("Double-click a cell to edit. Tick Delete to remove a row, then click Save Changes.")
                 current = pd.DataFrame(st.session_state["manual_records"])
                 current.insert(0, "Delete", False)
+
+                # Build column config dynamically based on current input mode
+                column_config = {
+                    "Delete": st.column_config.CheckboxColumn("Delete", default=False),
+                    "From": st.column_config.TextColumn("From Station", required=True),
+                    "To": st.column_config.TextColumn("To Station", required=True),
+                    "Distance (m)": st.column_config.NumberColumn("Distance (m)", format="%.2f", min_value=0.000001, required=True),
+                }
+                if use_bs_fs:
+                    column_config["Backsight (m)"] = st.column_config.NumberColumn("BS (m)", format="%.4f", required=True)
+                    column_config["Foresight (m)"] = st.column_config.NumberColumn("FS (m)", format="%.4f", required=True)
+                    column_config["Diff in Height (m)"] = st.column_config.NumberColumn("dH (m)", format="%.4f", disabled=True)
+                else:
+                    column_config["Backsight (m)"] = st.column_config.NumberColumn("BS (m)", format="%.4f", disabled=True)
+                    column_config["Foresight (m)"] = st.column_config.NumberColumn("FS (m)", format="%.4f", disabled=True)
+                    column_config["Diff in Height (m)"] = st.column_config.NumberColumn("dH (m)", format="%.4f", required=True)
+
                 edited = st.data_editor(
                     current, hide_index=True, use_container_width=True,
                     num_rows="fixed", key="lev_records_editor",
-                    column_config={
-                        "Delete": st.column_config.CheckboxColumn("Delete", default=False),
-                        "From": st.column_config.TextColumn("From Station", required=True),
-                        "To": st.column_config.TextColumn("To Station", required=True),
-                        "Backsight (m)": st.column_config.NumberColumn("BS (m)", format="%.4f", required=True),
-                        "Foresight (m)": st.column_config.NumberColumn("FS (m)", format="%.4f", required=True),
-                        "Distance (m)": st.column_config.NumberColumn("Distance (m)", format="%.2f", min_value=0.000001, required=True),
-                    },
+                    column_config=column_config,
                 )
                 c_save, c_clear = st.columns(2)
                 with c_save:
@@ -844,11 +900,32 @@ with tab1:
                                 origin, target = str(row["From"]).strip(), str(row["To"]).strip()
                                 if not origin or not target or origin.casefold() == target.casefold():
                                     raise ValueError("Every retained row needs two different station names.")
-                                bs, fs, distance = (float(row[k]) for k in ("Backsight (m)", "Foresight (m)", "Distance (m)"))
-                                if not all(math.isfinite(v) for v in (bs, fs, distance)) or distance <= 0:
-                                    raise ValueError("Every retained row needs finite readings and a positive distance.")
-                                revised.append({"From": origin, "To": target, "Backsight (m)": bs,
-                                                "Foresight (m)": fs, "Distance (m)": distance})
+                                distance = float(row["Distance (m)"])
+                                if not math.isfinite(distance) or distance <= 0:
+                                    raise ValueError("Every retained row needs a positive distance.")
+
+                                if use_bs_fs:
+                                    bs = float(row["Backsight (m)"])
+                                    fs = float(row["Foresight (m)"])
+                                    if not all(math.isfinite(v) for v in (bs, fs)):
+                                        raise ValueError("BS and FS must be finite numbers.")
+                                    revised.append({
+                                        "From": origin, "To": target,
+                                        "Backsight (m)": bs, "Foresight (m)": fs,
+                                        "Diff in Height (m)": round(bs - fs, 4),
+                                        "Distance (m)": distance,
+                                    })
+                                else:
+                                    dh = float(row["Diff in Height (m)"])
+                                    if not math.isfinite(dh):
+                                        raise ValueError("dH must be a finite number.")
+                                    revised.append({
+                                        "From": origin, "To": target,
+                                        "Backsight (m)": None, "Foresight (m)": None,
+                                        "Diff in Height (m)": dh,
+                                        "Distance (m)": distance,
+                                    })
+
                             st.session_state["manual_records"] = revised
                             st.session_state["lev_pending_next_from"] = (
                                 revised[-1]["To"] if revised else meta["bm_name"]
