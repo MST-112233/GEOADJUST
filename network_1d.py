@@ -101,7 +101,12 @@ def adjust_1d_network(
     # --- Detect column names ---
     bs_col = next((c for c in df.columns if 'back' in c.lower() or c.lower() == 'bs'), None)
     fs_col = next((c for c in df.columns if 'fore' in c.lower() or c.lower() == 'fs'), None)
-    dh_col = next((c for c in df.columns if 'diff' in c.lower() or 'dh' in c.lower() or 'delta' in c.lower()), None)
+    dh_col = next((c for c in df.columns
+                   if 'diff' in c.lower()
+                   or 'dh' in c.lower()
+                   or 'delta' in c.lower()
+                   or 'elev' in c.lower() and 'diff' in c.lower()
+                   or 'height' in c.lower() and 'diff' in c.lower()), None)
     dist_col = next((c for c in df.columns if 'dist' in c.lower() or c.lower() == 'd'), None)
     std_col = next((c for c in df.columns if 'std' in c.lower() or 'sigma' in c.lower() or 'error' in c.lower()), None)
 
@@ -109,11 +114,14 @@ def adjust_1d_network(
     to_col = df.columns[1]
 
     # --- Compute observed elevation differences ---
-    if bs_col and fs_col:
+    # Priority 1: explicit dH/Elev Diff/Diff in Height column
+    # Priority 2: BS - FS
+    # Priority 3: third column
+    if dh_col:
+        obs_dh_col = dh_col
+    elif bs_col and fs_col:
         df['Computed_dH'] = pd.to_numeric(df[bs_col], errors='coerce') - pd.to_numeric(df[fs_col], errors='coerce')
         obs_dh_col = 'Computed_dH'
-    elif dh_col:
-        obs_dh_col = dh_col
     else:
         obs_dh_col = df.columns[2]
 
@@ -291,11 +299,14 @@ def adjust_1d_network(
     # ===============================
     residuals_list = []
     for i in range(num_obs):
+        bs_val = float(df.iloc[i][bs_col]) if bs_col and pd.notnull(df.iloc[i].get(bs_col)) else None
+        fs_val = float(df.iloc[i][fs_col]) if fs_col and pd.notnull(df.iloc[i].get(fs_col)) else None
         residuals_list.append({
             "From": df.iloc[i][from_col],
             "To": df.iloc[i][to_col],
-            "Backsight (m)": float(df.iloc[i][bs_col]) if bs_col and pd.notnull(df.iloc[i][bs_col]) else 0.0,
-            "Foresight (m)": float(df.iloc[i][fs_col]) if fs_col and pd.notnull(df.iloc[i][fs_col]) else 0.0,
+            "Backsight (m)": bs_val if bs_val is not None else 0.0,
+            "Foresight (m)": fs_val if fs_val is not None else 0.0,
+            "Diff in Height (m)": float(np.round(df.iloc[i][obs_dh_col], 4)),
             "Distance (m)": float(df.iloc[i][dist_col]) if dist_col and pd.notnull(df.iloc[i][dist_col]) else 0.0,
             "StdErr (m)": float(np.round(obs_std_errs[i], 6)),
             "Observed dH (m)": float(np.round(df.iloc[i][obs_dh_col], 4)),
