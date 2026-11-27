@@ -668,7 +668,7 @@ with tab1:
 
     input_method = st.radio(
         "Select Data Input Method:",
-        ["📁 Upload CSV / Excel File", "✍️ Step-by-Step Manual Key-in Wizard"],
+        ["📁 Upload CSV / Excel File", "✍️ Manual Key-in"],
         horizontal=True,
         key="1d_input_method"
     )
@@ -862,7 +862,7 @@ with tab1:
                     st.error(f"Invalid observation: {exc}")
 
             if st.session_state["manual_records"]:
-                st.markdown("#### 📑 Collected Field Observations So Far:")
+                st.markdown("#### 📑 Collected Observations:")
                 st.caption("Double-click a cell to edit. Tick Delete to remove a row, then click Save Changes.")
                 current = pd.DataFrame(st.session_state["manual_records"])
                 current.insert(0, "Delete", False)
@@ -872,7 +872,7 @@ with tab1:
                     "Delete": st.column_config.CheckboxColumn("Delete", default=False),
                     "From": st.column_config.TextColumn("From Station", required=True),
                     "To": st.column_config.TextColumn("To Station", required=True),
-                    "Distance (m)": st.column_config.NumberColumn("Distance (m)", format="%.2f", min_value=0.000001, required=True),
+                    "Distance (m)": st.column_config.NumberColumn("Distance (m)", format="%.4f", min_value=0.000001, required=True),
                 }
                 if use_bs_fs:
                     column_config["Backsight (m)"] = st.column_config.NumberColumn("BS (m)", format="%.4f", required=True)
