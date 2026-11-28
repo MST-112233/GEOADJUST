@@ -23,25 +23,45 @@ INK = colors.HexColor('#172331')
 
 
 def _fonts():
+    """Find a Unicode font when available; never fail report generation.
+
+    The ReportLab built-in fallback is guaranteed on Streamlit Cloud.
+    Set GEOADJUST_FORCE_BUILTIN_FONTS=1 to test that fallback locally.
+    """
+    if os.environ.get('GEOADJUST_FORCE_BUILTIN_FONTS') == '1':
+        return 'Helvetica', 'Helvetica-Bold'
+
     font_candidates = [
         ('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'),
+        ('/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf', '/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf'),
+        ('/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf', '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf'),
         ('C:/Windows/Fonts/arial.ttf', 'C:/Windows/Fonts/arialbd.ttf'),
     ]
     for normal, bold in font_candidates:
         if os.path.isfile(normal) and os.path.isfile(bold):
             try:
-                pdfmetrics.registerFont(TTFont('GeoRegular', normal))
-                pdfmetrics.registerFont(TTFont('GeoBold', bold))
-                pdfmetrics.registerFontFamily('GeoRegular', normal='GeoRegular', bold='GeoBold')
+                if 'GeoRegular' not in pdfmetrics.getRegisteredFontNames():
+                    pdfmetrics.registerFont(TTFont('GeoRegular', normal))
+                    pdfmetrics.registerFont(TTFont('GeoBold', bold))
+                    pdfmetrics.registerFontFamily('GeoRegular', normal='GeoRegular', bold='GeoBold')
                 return 'GeoRegular', 'GeoBold'
             except Exception:
                 continue
-    # Built-in font lacks some mathematical glyphs; prefer a compatible Unicode font.
-    raise RuntimeError('Unicode PDF font not found. Install DejaVu Sans or Arial to render σ₀² and vᵀPv correctly.')
+    return 'Helvetica', 'Helvetica-Bold'
 
 
 def _p(value, style):
-    return Paragraph(escape(str(value)), style)
+    """Use safe ASCII in the unlikely event no Unicode font is installed."""
+    text = str(value)
+    if style.fontName in ('Helvetica', 'Helvetica-Bold'):
+        # Helvetica alone cannot encode sigma/subscripts reliably. On Streamlit
+        # Cloud packages.txt installs DejaVu; the ASCII fallback avoids boxes
+        # if that OS package is unavailable for any reason.
+        text = text.replace('m/√km', 'm/sqrt(km)')
+        text = text.replace('σ₀²', 'sigma0^2').replace('σ₀', 'sigma0')
+        text = text.replace('vᵀPv', 'v^TPv')
+        text = text.replace('—', '-').replace('–', '-').replace('√', 'sqrt')
+    return Paragraph(escape(text), style)
 
 
 def _n(value, digits):
