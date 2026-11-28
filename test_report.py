@@ -25,7 +25,11 @@ for mode in ('dh','bsfs'):
     document=fitz.open(dest)
     print('pages',len(document),'size',document[0].rect)
     text='\n'.join(page.get_text() for page in document)
-    for expected in ('Number of Unknowns','Number of Redundant Observations','σ₀²','vᵀPv','Std Dev (m)','Residual (m)'):
+    import os
+    expected_labels = ('Number of Unknowns','Number of Redundant Observations','Std Dev (m)','Residual (m)')
+    if os.environ.get('GEOADJUST_FORCE_BUILTIN_FONTS') != '1':
+        expected_labels += ('σ₀²','vᵀPv')
+    for expected in expected_labels:
         assert expected in text,expected
     assert ('Backsight (m)' in text)==(mode=='bsfs')
     assert 'Observed dH' not in text
@@ -37,4 +41,4 @@ for mode in ('dh','bsfs'):
     for pg in document:
         for word in pg.get_text('words'):
             assert word[0]>=5 and word[2]<=pg.rect.width-5,word
-    document[0].get_pixmap(matrix=fitz.Matrix(1.6,1.6),alpha=False).save(folder/f'preview_{mode}.png')
+    document[0].get_pixmap(matrix=fitz.Matrix(1.6,1.6),alpha=False).save(folder/f'preview_{mode}{"_fallback" if os.environ.get("GEOADJUST_FORCE_BUILTIN_FONTS") == "1" else ""}.png')
