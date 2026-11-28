@@ -1031,115 +1031,15 @@ with tab1:
 
         st.markdown("---")
         
-        from reportlab.lib.pagesizes import letter
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib import colors
+        from geoadjust_pdf_report import generate_pdf_report
 
-        def generate_pdf_report(res_data, project_meta):
-            pdf_buffer = io.BytesIO()
-            doc = SimpleDocTemplate(pdf_buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
-            story = []
-            styles = getSampleStyleSheet()
-
-            title_style = ParagraphStyle(
-                'ReportTitle', parent=styles['Heading1'], fontSize=18,
-                textColor=colors.HexColor('#1E88E5'), alignment=1, spaceAfter=4
-            )
-            subtitle_style = ParagraphStyle(
-                'ReportSubtitle', parent=styles['Normal'], fontSize=9,
-                textColor=colors.HexColor('#555555'), alignment=1, spaceAfter=12
-            )
-
-            story.append(Paragraph("GEOADJUST — 1D Levelling Adjustment Report", title_style))
-            story.append(Paragraph("Geodetic Network Least Squares Adjustment System (StarNet-Aligned Model)", subtitle_style))
-            story.append(Spacer(1, 8))
-
-            meta_data = [
-                [Paragraph("<b>Project Name:</b>", styles['Normal']), Paragraph(str(project_meta.get('name', '-')), styles['Normal']),
-                 Paragraph("<b>Date:</b>", styles['Normal']), Paragraph(str(project_meta.get('date', '-')), styles['Normal'])],
-                [Paragraph("<b>Instrument:</b>", styles['Normal']), Paragraph(str(project_meta.get('instrument', '-')), styles['Normal']),
-                 Paragraph("<b>Observer:</b>", styles['Normal']), Paragraph(str(project_meta.get('observer', '-')), styles['Normal'])]
-            ]
-            t_meta = Table(meta_data, colWidths=[90, 180, 70, 200])
-            t_meta.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F8F9FA')),
-                ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#DCDCDC')),
-                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-                ('PADDING', (0,0), (-1,-1), 5),
-                ('FONTSIZE', (0,0), (-1,-1), 9),
-            ]))
-            story.append(t_meta)
-            story.append(Spacer(1, 12))
-
-            story.append(Paragraph("<b>Adjustment Statistical Summary</b>", styles['Heading2']))
-            chi2_bounds_str = f"{res_data.get('chi2_lower', 0):.6f} / {res_data.get('chi2_upper', 0):.6f}" if res_data.get('chi2_lower', 0) > 0 else "N/A"
-            stat_data = [
-                ["Number of Stations:", str(res_data.get('num_stations', '-')),
-                 Paragraph("Instrument Std Error:", styles["Normal"]), f"{res_data.get('instrument_std', 0.003)} m/km"],
-                ["Number of Observations:", str(res_data.get('num_obs', '-')),
-                 "Redundant Observations (DOF):", str(res_data['dof'])],
-                ["Sum Sq of StdRes (vᵀPv):", f"{res_data['vTpv']:.4f}",
-                 Paragraph("Error Factor (σ₀):", styles["Normal"]), f"{res_data['sigma0']:.4f}"],
-                [Paragraph("A Posteriori Variance (σ₀²):", styles["Normal"]), f"{res_data['sigma0_sq']:.6f}",
-                 "Chi-Square Test (5%):", str(res_data['chi2_status'])],
-                ["Chi-Square Bounds:", chi2_bounds_str, "", ""],
-            ]
-            t_stat = Table(stat_data, colWidths=[140, 130, 140, 130])
-            t_stat.setStyle(TableStyle([
-                ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#DCDCDC')),
-                ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#FAFAFA')),
-                ('PADDING', (0,0), (-1,-1), 5),
-                ('FONTSIZE', (0,0), (-1,-1), 9),
-            ]))
-            story.append(t_stat)
-            story.append(Spacer(1, 12))
-
-            story.append(Paragraph("<b>Adjusted Elevations and Error Propagation (Meters)</b>", styles['Heading2']))
-            stn_df = res_data['stations']
-            stn_table_data = [list(stn_df.columns)] + stn_df.values.tolist()
-            t_stn = Table(stn_table_data, colWidths=[60, 80, 80, 80, 70, 80, 80])
-            t_stn.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E88E5')),
-                ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
-                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-                ('BOTTOMPADDING', (0,0), (-1,0), 5),
-                ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#DCDCDC')),
-                ('FONTSIZE', (0,0), (-1,-1), 9),
-                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F9F9F9')])
-            ]))
-            story.append(t_stn)
-            story.append(Spacer(1, 12))
-
-            story.append(Paragraph("<b>Adjusted Observations and Residuals</b>", styles['Heading2']))
-            res_df = res_data['residuals']
-            res_table_data = [list(res_df.columns)] + res_df.values.tolist()
-            t_res = Table(res_table_data, colWidths=[50, 50, 50, 50, 50, 55, 55, 55, 55, 50, 35])
-            t_res.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1E88E5')),
-                ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
-                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-                ('BOTTOMPADDING', (0,0), (-1,0), 5),
-                ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#DCDCDC')),
-                ('FONTSIZE', (0,0), (-1,-1), 8),
-                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#F9F9F9')])
-            ]))
-            story.append(t_res)
-
-            def add_header_footer(canvas, document):
-                canvas.saveState()
-                canvas.setFont('Helvetica', 8)
-                canvas.setFillColor(colors.HexColor('#777777'))
-                canvas.drawString(36, 20, "GEOADJUST Geodetic Network Adjustment Toolkit")
-                canvas.drawRightString(576, 20, f"Page {document.page}")
-                canvas.restoreState()
-
-            doc.build(story, onFirstPage=add_header_footer, onLaterPages=add_header_footer)
-            return pdf_buffer.getvalue()
-
-        pdf_bytes = generate_pdf_report(res, meta)
+        # Determine mode from the observations that produced these results.
+        # For direct dH input, do not print placeholder BS/FS columns.
+        _r = res["residuals"]
+        _bs = pd.to_numeric(_r.get("Backsight (m)", pd.Series(dtype=float)), errors="coerce")
+        _fs = pd.to_numeric(_r.get("Foresight (m)", pd.Series(dtype=float)), errors="coerce")
+        _has_bsfs = bool((_bs.fillna(0).ne(0).any()) or (_fs.fillna(0).ne(0).any()))
+        pdf_bytes = generate_pdf_report(res, meta, input_mode="bsfs" if _has_bsfs else "dh")
         out_filename = st.session_state.get("custom_filename_1d", "1D_Adjustment_Report")
 
         st.download_button(
